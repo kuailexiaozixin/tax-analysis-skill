@@ -17,12 +17,12 @@ version: "3.60.1"
 | 你要做的事 | 主线 | 展开在 |
 |-----------|-----|-------|
 | 判断问题属于哪一类 | ① | `references/classification.md`（可验算指标与实测依据） |
-| 认缺失前提、决定要不要追问 | ② | 冲突输入与按交易拆判断单元在 ② 末段；必备项逐条判在 `scripts/tax_coverage.py` |
-| 决定走哪些源、按什么顺序下挖 | ③ | `references/commands.md`（各层命令）、`references/out_of_library_layers.md`（点名文件/专业口径/立法草案） |
+| 认缺失前提、决定要不要追问 | ② | 冲突输入与按交易拆判断单元在 ② 末段；缺轴时先收取证范围再发检索；必备项逐条判在 `scripts/tax_coverage.py` |
+| 决定走哪些源、按什么顺序下挖 | ③ | `references/commands.md`（各层命令）、`references/out_of_library_layers.md`（点名文件/专业口径/立法草案）；同一站点多词并成一轮发与 TLS 短路写在 ③ 末段 |
 | 用户点名要查询/阅读/解读某一份文件 | ③ 末 | `references/out_of_library_layers.md` |
 | 题面把会计/审计/内控/评估/证券口径写进要件 | ③ 末 | `references/out_of_library_layers.md`，取证走子技能 |
 | 决定六源怎么聚合、缺一个漏什么 | ④ | — |
-| 查具体命令、看某个源失败了怎么办 | ⑤ | `references/commands.md`（六源）；六源之外那四路的命令在 `references/out_of_library_layers.md`；官方法规原文那三站怎么把命中收窄到某一维、为什么回 0 条，总局站点与总局法规库在 `subskills/chinatax/`、NPC 法规库在 `subskills/npc-flk/` |
+| 查具体命令、看某个源失败了怎么办 | ⑤ | `references/commands.md`（六源）；六源之外那四路的命令在 `references/out_of_library_layers.md`；正文取到的是哪一种状态（`body_status` 四态）、这一轮发过几次请求（`_attempts`）判在 ⑤；官方法规原文那三站怎么把命中收窄到某一维、为什么回 0 条，总局站点与总局法规库在 `subskills/chinatax/`、NPC 法规库在 `subskills/npc-flk/` |
 | 写最终回答（六段式/逐条比对/填空/条件矩阵/风险自检） | ⑥ | `references/output_templates.md` |
 | 判定某项优惠能否享受、多项能否同享 | ⑥ + ⑦ 第 22 条 | `references/output_templates.md`「资格判定条件矩阵式」 |
 | liability 题要出数 | ⑥ 前 | `scripts/tax_calc.py`（算式展开器；税率与扣除标准由 ③ 检回后当参数喂进） |
@@ -32,7 +32,7 @@ version: "3.60.1"
 | 手上是一次交来的几份合同，要按维度收齐并连出合同链 | ② 前 | `scripts/tax_intake.py --blank/--intake`（多合同受理：九维度 × 要素 × 五件套，抽取的值必须带出处）· `data/contract_intake_template.json`（要素与线索注册表，不含政策数值） |
 | 合同写的与实际做的对不对得上 | ⑥ 前 | `scripts/tax_intake.py --reconcile`（按判断单元逐条核对，四值结论取自 `tax_inspect`；无法确认落成证据缺口）· 同一份注册表 |
 | 把已确认的检查缺口转成能执行的制度条文 | ⑥ 前 | `scripts/tax_control.py`（内控生成：九要素，没有诊断就没有处方）· `data/control_activities.json`（控制环节与活动注册表） |
-| 题面落在研发费用加计扣除／高企认定 | ③ 末 | `subskills/R&D-Expenses/`——这一层不是检索源，是**算分、归集与三套口径隔离的领域手册**（含模板与资料包草稿）；它给的数字不顶依据，引用的政策原文仍回 ③ 取、⑧ 定级 |
+| 题面落在研发费用加计扣除／高企认定 | ③ 末 | `subskills/R&D-Expenses/`——这一层不是检索源，是**算分、归集与三套口径隔离的领域手册**（含模板、资料包草稿与 `articles/` 第三方解读层，后者证据力低于 policy／cases）；它给的数字不顶依据，引用的政策原文仍回 ③ 取、⑧ 定级 |
 | 想知道这类题必须有什么、现在还缺哪一项 | ② + ⑧ | `data/evidence_requirements.json`（必备项注册表）· `scripts/tax_coverage.py`（逐条判状态并出覆盖率） |
 | 确认哪些事绝对不能做 | ⑦ | 本节全文（核心约束，不外搬） |
 | 判断一条依据在答案里顶哪一层、要提醒什么（层级、时效、角色） | ⑧ | `references/evidence_grading.md` |
@@ -158,6 +158,13 @@ python tests/probe_classify.py --stats --real --oracle    # 判型体检（离�
 `QUESTION_TYPES[题型]["needs"]`，轴键取自 `CONTEXT_AXES`，`tax_coverage.load()` 载入时比对两边，
 对不上就报错而不是少判一项。
 
+**缺轴的处置是收取证范围，不是把每一类都取一遍。** 缺的那几轴照常追问，但取证不围着
+追问停手：时点没给就先按观察时点现行有效的那一版取，并在答案里写明换一个时点这条结论
+要重看；税种与专题范围按题面点名项收，题面没点名的相邻税种只取能回答"这一笔落不落得
+进它的税目"的那一句判据，其余留一句指针不展开。收窄排在发检索之前——中途才收手，
+前面已经发出去的那几轮省不掉，还会留下一摞用不上的条目。`tax_coverage.py` 判出的
+"缺"是还没检到的层，不是"这些层本轮都必须检"的许可。
+
 **四轴之外还有第三种输入：题面自相矛盾**。同一段话里既写本企业已登记为一般纳税人、
 又要求按小规模纳税人的免税起征点来判断时，**先指出冲突并询问，不得择一采用**——
 猜前提是把猜测写成答案，择一采用是把"回避矛盾"写成事实，两者都会让用户照着错的那
@@ -222,6 +229,14 @@ python tests/probe_classify.py --stats --real --oracle    # 判型体检（离�
 查税务总局关掉文件类标签的全站层，最后一轮补查境内相邻专题）。一轮取不回时
 放宽到哪一级是 Agent 的判断。
 
+**同一站点的多词检索并成一轮发。** 一个专题要的那几枚词（本体法名、配套公告文号、
+税种词、上位法关键词）在同一条脚本里按词循环、逐词回吐命中数与失败原因，不在会话里
+一词发一次、失败再补发第二次。同一主机连续两次 TLS 握手失败后，取数层在本会话内不再
+对它发请求（`tax_http.TLS_STREAK_LIMIT` 与 `tax_http.is_tls_failure`），剩下的词换源或
+换通道，照原样重跑整批只是把同一堵墙再撞一遍。批次里查出的失败分布按
+`tests/probe_rate_limit.py` 的三字段契约（最近实测日期／实测方法／读数）记进
+`references/source_defects.md`「限流记录的实测台账」，不另开一张表。
+
 三层不在 L1–L4 之内，各自的处置规则全在 `references/out_of_library_layers.md`：
 - **用户点名了某一份文件**：先按标题把这一份本身捞出排最前，只有标题确实就是被点名
   那份才认目标（`tax_terms.title_identity`），否则不得拿同域文件顶位；只取到官方解读
@@ -252,6 +267,8 @@ python tests/probe_classify.py --stats --real --oracle    # 判型体检（离�
 - **题面落在研发费用加计扣除／高企认定**：取证那几路照常走，另读
   `subskills/R&D-Expenses/`——它给的是高企认定评分自检、加计扣除归集与测算的
   规则口径（会计／高企／加计三套为科目级基准，互不换算）与制度模板、资料包清单，
+  另有 `articles/` 存三篇第三方解读文章（解释 15 号、产出物账务处理、费用冲减），
+  只讲条文脉络与落账路径，证据力低于 policy／cases，引用须标注"第三方解读"、不作依据条目，
   属领域手册而不是检索源：不进 ④ 的六源、不产依据条目，金额与占比只取用户给的台账、
   比例与限额取它登记的公开政策值，缺失列标待补不虚构；它引的那份政策原文仍回 ③ 取、进 ⑧ 定级。
 
@@ -292,19 +309,30 @@ python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax --size 10 
 写在 `references/out_of_library_layers.md` 对应小节（`subskills/maodocs/`、
 `subskills/chenyiwei-bbs/`、`subskills/szse-lawrules/`、`subskills/tax-preference/`），
 它们"没取到"与"取到了但读不得"（编号与文号都不证明版次）那些形态在本节不复述，
-记在所属目录的 `SKILL.md` 边界小节与 `NOTE.md` 台账里。此处只留四条硬规矩：
+记在所属目录的 `SKILL.md` 边界小节与 `NOTE.md` 台账里。此处只留五条硬规矩：
 
 - **失败先分诊**：区分"限流"与"代码坏了"——限流等退避重跑，代码问题才改代码。
   把限流误读成接口变更，会去改本来正常的代码。
-- **正文没取到时，手上只有失败原因这两个字段**（`body_error` / `_error`）：
-  【⑦ 第 18 条正文】**禁止编造法规库正文**：取正文失败时只报告失败原因，不得据标题推测条文内容。
+- **正文取到什么状态只认 `body_status` 这一个键**（值域 `tax_fgk.BODY_STATUSES`）：
+  `ok` 是拿到文字；`dynamic` 是页面回了 200 但正文靠脚本渲染，重发无用，要换取数路径；
+  `empty` 是正文容器在而文字为空，含 `media_only` 那一类视频/图片正文；`error` 才是
+  这一路没走通。`body_error` / `_error` 是给人看的那句原因，判定不读它。发过几次请求、
+  各败在哪，记在 `_attempts` 里（主机／异常类名或状态码／耗时／第几次），轮次级再汇总
+  一份。【⑦ 第 18 条正文】**禁止编造法规库正文**：三种"没拿到"都不得据标题推测条文
+  内容，也不得把 `dynamic` 或 `error` 写成"这份文件没有正文"。
 - **"这份文件里没有那张表"要说全**：`media_only` 的条目正文本来就是视频/图片，重试无用，
-  答案给出 `media_urls` 里的素材地址；条目带 `attachments` 时要给附件名与直链——随文的
-  税率表、纳税申报表常常只在附件里（这一栏的实测与边界登记在 `references/source_defects.md`，
-  清单层与正文层各装哪一半见 `subskills/chinatax/` 第四步），
-  只说"正文没有表"是把取得到的东西说成取不到。
+  答案给出 `media_urls` 里的素材地址；`body_in_attachment`（判据在
+  `tax_evidence.has_body_in_attachment`，读的是 `attachments` 与 `oss_files` 两格）为真时
+  要给附件名与直链——随文的税率表、纳税申报表常常只在附件里，人大库那份条例的正文
+  就只在 docx 与 pdf 里（这一栏的实测与边界登记在 `references/source_defects.md`，
+  清单层与正文层各装哪一半见 `subskills/chinatax/` 第四步），只说"正文没有表"是把
+  取得到的东西说成取不到。但这一格只回答"带没带附件"：有附件不等于正文就在附件里，
+  要连着 `body_status` 一起看。
 - **空清单有两种成因**（`_empty_reason`：翻页越界 vs 这一轮没取到清单），都不等于
   "库里没有这份文件"，答案里不得据空清单说无此规定。
+- **临时脚本落成 `.py` 文件再执行，跑完删**。在 shell 里以 heredoc 内嵌 Python 时，
+  串里的反斜杠会被 shell 折叠掉一层，带转义的正则与 Windows 路径因此改坏且不报错——
+  脚本跑得成，产出却是错的。落成文件再跑，同一份取证代码还能整份重放。
 
 ---
 
@@ -469,6 +497,14 @@ JSON（`python scripts/tax_control.py --diagnosis gaps.json`，`tax_inspect.buil
 `direct` + `superior` + `practice` 三层都有货；缺哪层就在答案里写明缺哪层，不得拿层级高
 但没规定这件事的文件顶位。
 
+**实务层这一批材料的名单只有一份**：`tax_evidence.PRACTICE_MARKS`（实务站加
+`OFFICIAL_QA_SOURCES`），判据是 `is_practice_layer`，读的是来源、栏目、URL 的栏目段与
+标题。税务总局政策问答、12366 答疑与法规库 `c100024` 那一栏都在这一批里——`rank_of`
+把它们归 `technical`（司局对具体事项的答复，不是第三方解读，标签不混为一谈），`role_of`
+因此落 `practice`，文号回库核对那一步也照走。两处各列一份名单时会漏出相反的错：
+改前实测那条 2025-02-07 货物和劳务税司答复就是 `rank` 落 `unknown`、`role` 落
+`direct`（把一份执行答复当成"本题的直接规定"引出去），核对层整轮 `checked=0`。
+
 **主依据（`pick_primary`）唯一出局的是立法过程件**（人大网草案、审议与征求意见公告，
 `legislative_process`）——它不是已公布的条文，这是事实层面的处置不是降权。其余按
 `_order_key` 排：能不能直接援引 → 角色 → 时效判得出来与否 → 规范层级 → 主题对应。
@@ -479,9 +515,10 @@ JSON（`python scripts/tax_control.py --diagnosis gaps.json`，`tax_inspect.buil
 `medium` 那三处出处各说什么，全在 `references/evidence_grading.md`
 「宪法不得直接援引」「提醒清单」。
 
-**执行口径要落到一份现行有效的法定文件上（`check_practice_citations`）**。税屋与
-公众号不参与降权，但它讲的口径可能出自一份早已废止的公告，而这件事从文章自己身上
-读不出来。这一层把它援引的文号拿回税务总局法规库查存在与时效，结果写进条目的
+**执行口径要落到一份现行有效的法定文件上（`check_practice_citations`）**。税屋、
+公众号与上面那批官方答复条目都不参与降权，但它们讲的口径可能出自一份早已废止的公告，
+而这件事从文章自己身上读不出来。这一层把它援引的文号拿回税务总局法规库查存在与时效，
+结果写进条目的
 `official_status`，九种取值各配一句提醒与一个下一步动作（`tax_evidence.OFFICIAL_CAVEAT`）；
 其中四种说的是本轮没查成，那四个名字与各自的动作在 ⑦ 第 24 条里逐个列着。`--no-citation-check`
 关掉这一层；开着时命令行【执行口径与实务认定】末尾那句 `citation_note` 报的是核对进行到哪
@@ -555,8 +592,11 @@ repealed**；「财税文件」栏不录时效时靠**制定依据援引**补这
 （闸只管串行不管快慢、闸只罩 NPC 与搜狗两个入口且两把闸的实测证据新旧不同、
 每条限流记录的最近实测日期与方法在
 `references/source_defects.md`「限流记录的实测台账」里、缺口说明只说"这次没取到"、
-会计口径缺口只靠词表认、审计/内控/评估/证券口径靠题面人判），全在 `references/source_defects.md`。
-**改代码前先查那张表，别把已由代码保证的行为又手写一遍。**
+会计口径缺口只靠词表认、审计/内控/评估/证券口径靠题面人判，另有四条取数边界：
+本机对 `www.npc.gov.cn` 的 TLS 握手被拒、search5 复测只能走生产路径、附表与部分
+行政法规正文只在附件里、税屋正文要过一次浏览器凭据），全在 `references/source_defects.md`。
+**改代码前先查那张表，别把已由代码保证的行为又手写一遍。** 取数层的重试次数、每一次
+请求落在 `_attempts` 里的形状，与哪些入口还不入账，也记在同一张表。
 
 ---
 

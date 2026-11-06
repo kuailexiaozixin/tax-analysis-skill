@@ -377,13 +377,18 @@ def test_cache_excludes_body():
         assert len(files) == 1, f"应只落一份清单缓存，实际 {len(files)} 个"
         raw = files[0].read_text(encoding="utf-8")
         assert "第一条" not in raw, "缓存文件里出现了正文内容——正文被缓存了！"
-        assert "body" not in raw, \
-            f"缓存文件里出现了 body 字段（正文或草稿被缓存）：{raw[:200]}"
+        # 按键名精确盯，不用 "body" 子串：清单层现在带 `body_in_attachment`
+        # （由附件字段派生的布尔，值是 True/False，不含任何文本），子串检查会把
+        # 这个标记当成正文。真正不许落盘的是这三个键——它们带的才是正文文本。
+        for key in ('"body"', '"body_error"', '"body_status"'):
+            assert key not in raw, \
+                f"缓存文件里出现了 {key} 字段（正文被缓存了）：{raw[:200]}"
 
         payload = json.loads(raw)["payload"]
         assert payload["results"], "缓存里应保留清单条目"
         for entry in payload["results"]:
-            bad = [k for k in entry if k.startswith("body")]
+            bad = [k for k in entry
+                   if k in ("body", "body_error", "body_status")]
             assert not bad, f"缓存条目含正文字段 {bad}：{list(entry)}"
         print(f"  [PASS] 缓存 {files[0].name} 只含清单（{len(payload['results'])} 条），"
               f"正文 {len(r['results'][0]['body'])} 字符未落盘")
@@ -980,6 +985,231 @@ def test_attach_associations_runs_per_entry_without_body():
     assert all("associations" in e for e in entries), entries
     assert len(calls) == 2, f"每条一次请求，实际 {len(calls)}"
     print("  [PASS] attach_associations 逐条现拉，无需正文")
+
+
+def test_body_status_names_the_four_outcomes():
+    """正文取回状态：ok / empty / dynamic / error 四种要在这一个键上分开。
+
+    对应的坑：原先"拿到了"看 content、"没拿到"看 _error 的措辞，调用方要看两个键
+    并拿句子做子串比对才能判（search_fgk 就靠 "视频/图片" in _error 认视频条目）。
+    实测的动态壳页（c100009/c5193055 只有 1,731 字框架）与真的取失败是两种下一步：
+    前者重试无用、要换取数路径，后者重试可能成。
+    """
+    # ① 有条文 → ok
+    html = _detail_html("<p>第一条 正文。</p>")
+    with _patched(**{"requests.get": lambda url, **kw: _Resp(html)}):
+        ok = fetch_fgk_body(FGK_URL)
+    assert ok["body_status"] == "ok", ok
+    assert not ok.get("_error") and ok.get("content"), ok
+
+    # ② 容器取到但里面没字 → empty
+    with _patched(**{"requests.get": lambda url, **kw:
+                     _Resp('<div class="arc_cont"><p> </p></div>')}):
+        blank = fetch_fgk_body(FGK_URL)
+    assert blank["body_status"] == "empty", blank
+    assert blank.get("_error") and not blank.get("content"), blank
+
+    # ③ 视频型正文 → empty，并直接带 media_only 标记（不再靠句子认）
+    with _patched(**{"requests.get": lambda url, **kw:
+                     _Resp(_detail_html('<video src="v.mp4"></video>'))}):
+        video = fetch_fgk_body(FGK_URL)
+    assert video["body_status"] == "empty", video
+    assert video.get("media_only") is True, video
+
+    # ④ 200 + 短页面 + 只有框架脚本、无正文容器 → dynamic
+    shell = ('<!DOCTYPE html><html><head><script src="/js/app.js"></script>'
+             '</head><body><div id="app"></div></body></html>')
+    assert len(shell) < tax_fgk.DYNAMIC_SHELL_MAX_CHARS, "用例得落在阈值之内"
+    with _patched(**{"requests.get": lambda url, **kw: _Resp(shell)}):
+        dyn = fetch_fgk_body(FGK_URL)
+    assert dyn["body_status"] == "dynamic", dyn
+    assert "脚本" in dyn["_error"], dyn
+
+    # ⑤ 长页面却没有正文容器（改版或拿错地址）→ error，不是 dynamic
+    big = "<html><body>" + "<div>导航</div>" * (tax_fgk.DYNAMIC_SHELL_MAX_CHARS // 6) + "</body></html>"
+    with _patched(**{"requests.get": lambda url, **kw: _Resp(big)}):
+        wrong = fetch_fgk_body(FGK_URL)
+    assert wrong["body_status"] == "error", wrong
+
+    # ⑥ 非 200 且不在可重发档（404）→ error，一句 "HTTP 404"，不带重试次数
+    with _patched(**{"requests.get": lambda url, **kw: _Resp("", status_code=404)}):
+        missing = fetch_fgk_body(FGK_URL)
+    assert missing["body_status"] == "error", missing
+    assert missing["_error"] == "HTTP 404", missing
+    assert len(missing["_attempts"]) == 1, missing["_attempts"]
+    assert all(s in tax_fgk.BODY_STATUSES for s in
+               (ok["body_status"], blank["body_status"], dyn["body_status"],
+                wrong["body_status"], missing["body_status"]))
+    print("  [PASS] body_status 四值分开：ok/empty/dynamic/error 各归其位")
+
+
+def test_retry_records_attempts_and_last_reason():
+    """瞬时失败要退避重发，且每次尝试与末次原因都留在返回值上（登记事项 #104）。
+
+    对应的坑：原先一次不通就放弃，"库里没有"与"试了三次不通"在返回值上长一个样，
+    成本只能靠人逐条点数工具回显。现在台账是四元组、失败句带着次数。
+    """
+    saved_base = tax_http.BACKOFF_BASE
+    tax_http.BACKOFF_BASE = 0.0        # 打桩的失败不该让用例真等 1.5+3 秒
+    tax_http.reset_tls_state()
+    tax_http.reset_ledger()
+    try:
+        # ① 两次超时、第三次成功：结果照常取回，台账留三次尝试
+        state = {"n": 0}
+
+        def flaky(url, **kw):
+            state["n"] += 1
+            if state["n"] < 3:
+                raise requests.exceptions.ConnectTimeout("连接超时")
+            return _Resp(_detail_html("<p>第一条 正文。</p>"))
+
+        with _patched(**{"requests.get": flaky}):
+            r = fetch_fgk_body(FGK_URL)
+        assert not r.get("_error"), r
+        assert r["body_status"] == "ok", r
+        assert state["n"] == 3, f"应发满三次，实际 {state['n']}"
+        assert [x[3] for x in r["_attempts"]] == [1, 2, 3], r["_attempts"]
+        assert [x[1] for x in r["_attempts"]] == ["ConnectTimeout", "ConnectTimeout", 200], r["_attempts"]
+        assert r["_attempts"][0][0] == "fgk.chinatax.gov.cn", r["_attempts"]
+        assert all(isinstance(x[2], int) for x in r["_attempts"]), r["_attempts"]
+
+        # ② 三次都 502：失败句带着"几次"，与一次不通分得开
+        with _patched(**{"requests.get": lambda url, **kw: _Resp("", status_code=502)}):
+            bad = fetch_fgk_body(FGK_URL)
+        assert bad["body_status"] == "error", bad
+        assert bad["_error"].startswith(f"{tax_http.DEFAULT_ATTEMPTS} 次尝试仍失败：HTTP 502"), bad
+        assert len(bad["_attempts"]) == tax_http.DEFAULT_ATTEMPTS, bad["_attempts"]
+        assert all(x[1] == 502 for x in bad["_attempts"]), bad["_attempts"]
+
+        # ③ 会话级台账把所有尝试都记下来（取数函数不便带键时靠它交账）
+        assert tax_http.ledger_size() == len(r["_attempts"]) + len(bad["_attempts"]), \
+            tax_http.SESSION_LEDGER
+    finally:
+        tax_http.BACKOFF_BASE = saved_base
+        tax_http.reset_tls_state()
+        tax_http.reset_ledger()
+
+
+def test_tls_short_circuit_skips_third_request():
+    """同一 host 连续两次 TLS 握手失败后，本会话不再发第三个请求。
+
+    对应的坑：上一轮在 www.chinatax.gov.cn 上连撞 8 次 SSLError，每次都真发一次
+    请求、真等一次超时。短路之后第三次连套接字都不开。
+    """
+    saved_base = tax_http.BACKOFF_BASE
+    tax_http.BACKOFF_BASE = 0.0
+    tax_http.reset_tls_state()
+    tax_http.reset_ledger()
+    try:
+        calls = []
+
+        def ssl_fail(url, **kw):
+            calls.append(url)
+            raise requests.exceptions.SSLError("SSL handshake failed")
+
+        with _patched(**{"requests.get": ssl_fail}):
+            first = fetch_fgk_body(FGK_URL)
+            assert len(calls) == 1, calls
+            second = fetch_fgk_body(FGK_URL)
+            assert len(calls) == 2, f"第二次仍应真发请求，实际发过 {len(calls)} 次"
+            third = fetch_fgk_body(FGK_URL)
+        assert len(calls) == 2, f"第三次不该再上网，实际发过 {len(calls)} 次"
+        assert "本会话已判定不可用" in third["_error"], third
+        assert third["body_status"] == "error", third
+        assert first["body_status"] == "error" and second["body_status"] == "error"
+        # 熔断这一条也进台账，且标着"未再发请求"，不会被读成一次真实网络往返
+        assert "熔断" in third["_attempts"][-1][1], third["_attempts"]
+    finally:
+        tax_http.BACKOFF_BASE = saved_base
+        tax_http.reset_tls_state()
+        tax_http.reset_ledger()
+
+
+def test_search_failure_directly_hits_detail_page_by_ids():
+    """检索接口失败但检索词带着法规库标识：直达详情页，而不是回空清单。
+
+    对应的坑：上一轮 search5 多次 SSLError，手里已经有 `c100009/c5237365` 却只能
+    交回 0 条——而"0 条"在下游会被读成"库里没有这份文件"（红线⑦禁止的那种误读）。
+    """
+    keyword = "中华人民共和国增值税法 c100009/c5237365"
+    failed = {"total": 0, "results": [], "_error": "SSLError：握手失败",
+              "_attempts": [("www.chinatax.gov.cn", "SSLError", 120, 1)]}
+    html = _detail_html("<p>第一条 为了保障税收权益，制定本法。</p>",
+                        title="中华人民共和国增值税法", pub_date="2024-12-01")
+    want_url = "https://fgk.chinatax.gov.cn/zcfgk/c100009/c5237365/content.html"
+    got_urls = []
+
+    def fake_get(url, **kw):
+        got_urls.append(url)
+        return _Resp(html)
+
+    with _patched(search_chinatax=lambda *a, **kw: failed,
+                  **{"requests.get": fake_get}):
+        r = tax_fgk._scan_list(keyword, size=5, max_pages=1)
+    assert got_urls == [want_url], f"应拼出详情页地址并去取，实际 {got_urls}"
+    assert r["total"] == 1, r
+    entry = r["results"][0]
+    assert entry["url"] == want_url and entry["title"] == "中华人民共和国增值税法", entry
+    assert entry["date"] == "2024-12-01", entry
+    assert entry["_direct_hit"] is True, entry
+    assert r.get("direct_from_ids") is True, r
+    # 失败要说得出，但不能被读成"库里没有"
+    assert "SSLError" in r["_error"] and "直达详情页" in r["_error"], r["_error"]
+    assert "未筛出法规库条目" not in r["_error"], r["_error"]
+    assert r.get("_fetch_failed") is not True, r   # 手上有条目，别再让下游整轮读空
+    assert r.get("_search_failed") is True, r
+    # 检索那一次的台账仍在，直达这一次的尝试也记在同一本账上
+    hosts = [x[0] for x in r["_attempts"]]
+    assert "www.chinatax.gov.cn" in hosts and "fgk.chinatax.gov.cn" in hosts, r["_attempts"]
+    print("  [PASS] 检索失败按标识直达详情页，取回 1 条且不写成 0 条命中")
+
+    # 直达也取不到时：_fetch_failed 保持 True，绝不静默降级
+    with _patched(search_chinatax=lambda *a, **kw: failed,
+                  **{"requests.get": lambda url, **kw: _Resp("", status_code=500)}):
+        saved_base = tax_http.BACKOFF_BASE
+        tax_http.BACKOFF_BASE = 0.0
+        try:
+            r2 = tax_fgk._scan_list(keyword, size=5, max_pages=1)
+        finally:
+            tax_http.BACKOFF_BASE = saved_base
+    assert r2["total"] == 0 and r2["_fetch_failed"] is True, r2
+    assert "SSLError" in r2["_error"] and "直达详情页也未取回" in r2["_error"], r2["_error"]
+    print("  [PASS] 直达也未取回时保持 _fetch_failed，失败没有被写成 0 条命中")
+
+
+def test_body_in_attachment_derived_from_attachments():
+    """带附件的条目要有 body_in_attachment，正文缺失时才能与"规定不存在"分开。
+
+    对应的坑：印花税法（c100009/c5193058）正文末尾只有"附：印花税税目税率表.ppt"，
+    只说"正文里没有这张表"会被写成"没有这张表"。
+    """
+    fake, _ = _make_fake_search({1: 1})
+    item = _fgk_item(1, 0)
+    item["attachments"] = [{"name": "附：印花税税目税率表.ppt",
+                            "type": "ppt",
+                            "url": "http://fgk.chinatax.gov.cn/a.ppt"}]
+
+    def fake_with_att(keyword, page=1, size=PAGE_SIZE, filters=None, **opts):
+        return {"total": 1, "results": [item]}
+
+    with _patched(search_chinatax=fake_with_att,
+                  **{"requests.get": lambda url, **kw:
+                     _Resp(_detail_html("<p>第十三条 本法自2022年7月1日起施行。</p>"))}):
+        r = tax_fgk._scan_list("测试词", size=1, max_pages=1)
+    entry = r["results"][0]
+    assert entry["body_in_attachment"] is True, entry
+
+    fake2, _ = _make_fake_search({1: 1})
+    with _patched(search_chinatax=fake2):
+        r2 = tax_fgk._scan_list("测试词", size=1, max_pages=1)
+    assert r2["results"][0]["body_in_attachment"] is False, r2["results"][0]
+
+    # 判据与人大法律库详情共用一份：oss_files（docx/pdf）也算附件
+    assert tax_evidence.has_body_in_attachment(
+        {"oss_files": {"docx": "http://x/a.docx", "pdf": ""}}) is True
+    assert tax_evidence.has_body_in_attachment({"oss_files": {"docx": "", "pdf": ""}}) is False
+    assert tax_evidence.has_body_in_attachment({}) is False
+    print("  [PASS] body_in_attachment 由 attachments/oss_files 派生，两处共用一份判据")
 
 
 # ── 入口 ────────────────────────────────────────────────────────────────────

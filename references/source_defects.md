@@ -87,6 +87,12 @@
 | 检索行里那两枚摘要（`enpcontent` 截断与编辑写的 `Abstract`）看着像正文，接进抽取等于拿摘要当条文 | `_row_from_json` 只把它们落成 `snippet`／`abstract` 两个展示字段，正文一律回正文页取；`test_snippet_and_abstract_stay_display_only` | 200 行取样里 `enpcontent` 195 行有值、只有 120 与 123 两档长度、194 行带收尾截断标记；`Abstract` 174 行有值、9 到 193 字（逐字段读数表见 `subskills/ctaxnews/NOTE.md`「检索行的字段与值域」）。一枚是正文截断、一枚是编辑摘要，两者都不是原文 |
 | 栏目页的行若按容器类名找会漏会串：站点实际出现的容器有三枚（`div.newsList-item`、`ul.onlyTitleList`、`ul.ztNews-list-main`），且 `newsList-item` 写成 `newsList-item clearfix` 时按精确类名 14 页全读 0 行；侧栏还铺着别的栏目的推荐位 | `_page_rows` 按地址形状认行（`_ARTICLE_HREF_RE`：`/<目录段>/<yyyy-mm>/<dd>/content_<id>.html`），`_own_region` 先按 `layout-380`／`footer` 切掉侧栏与页脚，再用两个计数器分别记留在本栏段内的外来行数（`off_col`）与切不出本栏标题时不在本栏检索集里的行数（`off_set`）；`_row_title` 只在纯日期单独占一行时丢掉它，两行标题两行都留 | 归属判据是地址而不是类名，所以没有类名的页面照样取到行、目录段不是本栏的一律扣进 `off_col`；切不出标题的那一类页面（实测三例：按别的栏铺块的落地页 node_13、只铺一块相关文号列表的短页 node_8030、父栏目页 node_24）同目录兄弟栏长得一样，只能拿本栏最新一批 `articleid`（`_column_id_set`，`pageSize` 上限 5000、只发 `sort=date`，取到的是按发布日期倒序的最新 5000 行）交一次。同一篇的配图链接与标题链接同址，按地址并成一行、标题取非空那枚，并完仍无文字的行丢掉。`TestCtaxColumnPageRows` 八条覆盖这六道，夹具外壳用的类名 `tabList` 是合成的（站点 14 份栏目页副本里 0 处命中），故意挑一枚站点没发过的名字才验得出 `_page_rows` 不读类名；其中 `test_sidebar_rows_are_cut_before_scanning` 与 `test_off_directory_rows_inside_the_region_are_counted` 是一对——把侧栏那块摆进 `layout-380` 之前，前一者的 `off_col` 立刻从 0 变 1 |
 | 子技能两份文档里写的符号名与探针请求数，改脚本时容易只改一侧 | `TestCtaxSubSkillDocHooks` 三条：`test_named_symbols_exist` 把 `subskills/ctaxnews/` 两份文档里出现的 `tax_ctax.<符号>` 逐个 `hasattr` 核对；`test_probe_item_costs_match_the_note_table` 从 `subskills/ctaxnews/probe_ctaxnews.py` 的语法树里读 `COST` 表，与 NOTE.md「探针项与请求数」小节逐行比对，断言两个合计（全项 209、去掉第 10 项后 107），再把这对合计在六处文字里逐处核对且各只许出现一次——NOTE 的复测入口那一行、表下面那一行与子技能 SKILL 命令行那两条注释按数字解析比对，NOTE 单轮耗时那一行（`--fast` 数与全项数各一条整串）、README 目录树那一行、这一行本身按整串比对；`test_the_route_is_wired_into_the_aggregator` 断言这一站在 `DEFAULT_SOURCES`、`SOURCE_RANK`、`SOURCE_LABELS`、`SOURCE_IMPACT`、`SOURCE_PLAIN`、`DATE_SERVER_SOURCES` 六处登记一处不缺（四张源表的键集合两两相同），日期已下推给服务端、没有再在窗口内补筛一遍，并要求 SKILL.md 里有一行同时写着中国税网与源键 `ctax` | 文档写了一个不存在的函数名、探针改了请求数而 NOTE/README/台账没跟着改、有人把这一站从默认名单里摘掉（六处登记漏一处）或把它的日期退回本地补筛，三种都会报红。2026-10-20 在隔离副本树跑十二处变异全打红（先取一份未变异副本的失败集当基线，只把新增失败算检出）：探针 `COST` 第 5 项改一档、NOTE 表第 5 行改一档、NOTE 复测入口那行的全项数、NOTE 表下面那行的 `--fast` 数、SKILL 全项复测那行、SKILL `--fast` 那行、README 那行的全项数、这一行的两个合计、NOTE 单轮耗时那行的 `--fast` 数、同一行的全项数、`_is_date_line` 把三段日期只认两段、父栏目提醒把「父栏目」改成「上级栏目」。打向 README、这一行与 NOTE 单轮耗时那一行的四处变异是这一轮才打红的：第一遍副本排除 `data/` 时另有一条无关用例先红，README 与这一行被它冒充成检出；改成基线差集后这两处露出漏检，说明原门禁只核对 NOTE 与 SKILL，补上整串复述核对才打红 |
+| 取数层不计也不数：一次任务在某个站上花了几次、每次败在哪，事后只能靠人逐条点数工具回显 | `tax_http.attempt` 在每个请求出口记四元组 `(host, 异常类名或 HTTP 状态码, 耗时 ms, 第几次尝试)`，`new_log`/`note_attempt` 给调用方建账，`SESSION_LEDGER` 与 `ledger_size`/`ledger_from` 给"返回形状轮不到插字段"的那几路（NPC 检索、搜狗微信）留一个会话级落点；退避次数收进 `DEFAULT_ATTEMPTS = 3` 与 `BACKOFF_BASE`（环境变量 `TAX_HTTP_BACKOFF`，离线门禁置 0） | `test_retry_records_attempts_and_last_reason` 打桩两次失败后断言台账有三条、末条带最后一次失败原因。**接入范围是边界**：本轮改的是 `tax_fgk.fetch_fgk_body`、`tax_fgk` 的关联查询与 `tax_web_search` 三处出口；`tax_shui5`／`tax_sogou`／`tax_wechat` 仍各自维护 Session，它们的尝试不进这本账 |
+| 同一域名反复 TLS 握手失败还逐个请求，把预算花在已经死了的通道上 | `tax_http.is_tls_failure`（既认最外层 `SSLError`，也顺 `__cause__`/`__context__` 链认 urllib3 把 `SSLError` 嵌进 `ConnectionError` 那一型——只看外层类名会让这条短路在真实故障下从不生效）＋ `_tls_streak`／`_tls_blocked`：同一 host 连续 `TLS_STREAK_LIMIT = 2` 次握手失败即进熔断名单，第三次不发网络请求 | `test_tls_short_circuit_skips_third_request` 断言第三次没有发出请求。名单是**进程内**状态，与 `SerialGate` 的跨进程锁文件刻意分开：证书链与协议栈协商失败是本机这一趟的事，不该由一个锁文件替所有进程决定 |
+| search5 检索失败时 `search_fgk` 交回空清单，读的人据此判"库里没这份文件" | `tax_fgk.fgk_detail_url`（`c100009/c5237365` → 可点的详情页地址）＋ `detail_ids_from_text`＋失败退路：检索层挂了而检索词里带着法规库标识时，直接按标识取详情页，条目只带 meta 里的标题与成文日期，`_error` 与未取回的说明照实交出 | `test_search_failure_directly_hits_detail_page_by_ids` 打桩检索失败，断言仍回一条带 `url` 的记录且 `_error` 不被抹平。判据仍归 `_fetch_failed`／`_empty_reason` 那两条标记，不看句子（与本表"零命中时也写 `_error` 当说明"那一行同一口径） |
+| 详情页返回 200 但正文不在静态 HTML 里，与"这份文件没有正文"在返回值上长一样 | `tax_fgk.BODY_STATUSES = (ok, dynamic, empty, error)`，`fetch_fgk_body` 回 `body_status`；`dynamic` 是 200 加页面框架特征，`empty` 是 200 清洗后为空，`error` 是没走成；`search_fgk(with_body=True)` 把这一格随条目带出成 `_body_status`，不再只有 `body_error` 一句人话 | `test_body_status_names_the_four_outcomes` 四个值域逐一可达。实测形态：《城市维护建设税法》`c100009/c5193055` 与政策问答 `c100024/c5245218` 属静态页读不出条文那一类（本轮一次取回 43,910 字节完整正文、一次只回壳页，同一入口两种结果，所以这一格只能报状态不能报结论） |
+| 正文只做在附件里（附表、docx、pdf），取回记录之后才发现文本层没有表 | `tax_evidence.has_body_in_attachment` 按记录自带的 `attachments`（总局与法规库清单）与 `oss_files`（人大法律库详情）两枚字段派生 `body_in_attachment`，两处判据共用这一个函数 | `test_body_in_attachment_derived_from_attachments`。实测两例：《印花税法》`c100009/c5193058` 正文末尾只有"附：印花税税目税率表.ppt"、《碳排放权交易管理暂行条例》人大库记录 `ff8081819ff54a6401a0ae8df6842641` 的 `content_tree` 有 33 个节点而正文全空。**这一格只回答"带没带附件"**：有附件不等于正文就在附件里，要与 `body_status` 连着看；红线⑦禁止把"文本层读不到"写成"这条规定没有"，靠的就是这一格与 `body_status` 的分工 |
+| 定级层与文号核对层对"什么算实务材料"两套判据，税务总局政策问答与 12366 答疑两边都不认 | `tax_evidence.PRACTICE_MARKS = PRACTICE_SOURCES + OFFICIAL_QA_SOURCES`（后者 `"政策问答"/"答疑"/"问答"/"12366"/"c100024"`，最后一枚是法规库政策问答栏目的 URL 栏目段），`practice_text` 拼 `source`/`source_label`/`site`/`column`/`channel`/`url` 与标题，`is_practice_layer` 是唯一判据；`tax_answer._is_practice_row` 改为调它，不再自己列一组源键 | `test_official_qa_rows_are_practice_in_both_places` 断言同一条问答件在 `rank_of` 与 `check_practice_citations` 两处判定一致。改动前的实跑形状：政策问答带着文号却进不了核对，`check_practice_citations` 首轮回 `{"checked": 0, "skipped": 0, "by_outcome": {}}` 且输出上看不出异常；提醒句沿用 `tax_evidence.OFFICIAL_CAVEAT` 现成的九种，没有新增第十种文案 |
 
 ## 限流记录的实测台账
 
@@ -249,6 +255,34 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   微信与手机网页阈值未复测，桌面 2026-10-23 数据只是历史；保护保留，不保证站点放行。
 - **缺口说明是"这次没取到"，不是"该层没有内容"**。程序只把这句话递过去，
   不替你重试、也不替你换源补缺；用什么口径回答仍然由上层决定。
+- **`www.npc.gov.cn` 这一枚主机在本机是 TLS 层拒绝，不是限流，换通道方式也不同**。
+  2026-11-02 一次三组对照（`requests` 2.33.0 ＋ OpenSSL 3.5.7、`trust_env=True` 默认、
+  `trust_env=False` 直连、强制 TLS 1.2）三组同报 `SSLError`，`curl` 走系统 schannel
+  给出的确切原因是 `SEC_E_ILLEGAL_MESSAGE (0x80090326)`（握手期收到致命告警）；
+  本机环境里没有 `HTTP_PROXY`／`HTTPS_PROXY` 一类的代理变量，`127.0.0.1:7897` 在监听
+  但没有变量指过去，所以这一型失败与代理无关、也与"再试一次"无关——重试只放大耗时。
+  `flk.npc.gov.cn` 是另一枚主机（`tax_search` 那一路），200 可通，别把两者的失败混成
+  "NPC 整站不可用"。落在本技能里的后果：法律文本优先走总局政策法规库详情页，
+  人大库只在需要立法过程与审议材料时用，取不到要按"这一主机本机不通"写，
+  不写成"该法无条文"。
+- **search5 这一路只能用生产路径发，探针手写 GET 会误判端点失效**。同一轮里
+  `GET https://www.chinatax.gov.cn/robintg/search/search5` 回 404（144,172 字节那份
+  站点错误页），而 `tax_fgk.search_fgk("碳排放权交易")` 走 POST 那份 payload 实测
+  命中 1 条并翻了 2 页。复测这一路要按 `tests/probe_rate_limit.py` 的做法把生产
+  路径实际要发的那一份请求抓出来重放，不要手抄副本，更不要把 404 读成"接口下线"。
+- **法规库的附表常以 `.ppt`／`.docx`／`.pdf` 附件挂出，文本层读不到表体；PDF 的文本层
+  要本机 pdfplumber 解**。2026-11-02 实测：同一份广东税务系统的《印花税法》解读 PDF
+  （24 页 2,011,434 字节），`WebFetch` 回"二进制流无法读取文字"，`curl` 取回后
+  pdfplumber 抽出 3,979 字文本层，其中第 22–23 页就是《印花税税目税率表》表体；
+  这台机器上 `pypdf` 与 `fitz` 未安装，Read 工具读 PDF 因缺 poppler 必失败。
+  幻灯片型附件每页可能是栅格图，抽出的字数少不等于没抽到。
+- **税屋正文走裸 `requests` 必回那份 23,682 字节的挑战页，走技能自己的站内通道才放行**。
+  2026-11-02 实测：`python scripts/tax_shui5.py "碳交易税务处理" --size 3 --read
+  --channel native` 一次取回《碳交易税务处理与会计处理差异问题研析》（2025-12-29）
+  正文 6,908 字／1 页。上一轮把它记成"WAF 挑战未通过、acw_sc__v2 算出来服务端仍要求
+  执行完整 JS 挑战链"——那是自己拿 `requests` 硬闯的结果，`acw_sc__v2` 单独提交即可
+  放行这一条本来就写在 `subskills/shui5/NOTE.md` 的「WAF 与凭据」表里。取正文的入口
+  是 `tax_shui5` 与 `tax_browser`，不是自写脚本。
 - **文号检索不出来有两种，本层只收掉了一种**。`_citation_phrase` 补前缀只在文号
   左侧紧挨着机关名与文件类型时成立（"国家税务总局公告2021年第5号"）。文章写成
   "《财政部税务总局关于……的公告》(2022年第15号" 时，文号左边是括号，补不出前缀，

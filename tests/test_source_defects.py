@@ -1261,7 +1261,7 @@ class TestPracticeCitationCheck(unittest.TestCase):
         self.assertEqual({"effective": 1}, stats["by_outcome"], stats)
 
     def test_practice_recognition_shares_the_graders_vocabulary(self):
-        """认源用 `tax_evidence.PRACTICE_SOURCES`：这里各写一套源名就会静默空转。
+        """认源用 `tax_evidence.PRACTICE_MARKS`：这里各写一套源名就会静默空转。
 
         实测过的三种真实形态都要认出来——税屋的标签、公众号的标签、360 回填的纯域名。
         """
@@ -1270,6 +1270,39 @@ class TestPracticeCitationCheck(unittest.TestCase):
             self.assertTrue(ANS._is_practice_row(row), src)
         self.assertFalse(ANS._is_practice_row(
             {"title": "车辆购置税法", "source": "🏛️ 国家税务总局"}))
+
+    def test_official_qa_rows_are_practice_in_both_places(self):
+        """官方答复栏目在两处判据里都是实务层，一处判出另一条必然判出。
+
+        本轮实跑漏的就是这一类：税务总局货物和劳务税司政策问答那一条（法规库
+        政策问答栏目，URL 栏目段 c100024）带着文号，而 `_is_practice_row` 只按
+        税屋与公众号的源名认，核对首跑回 `{"checked": 0, "skipped": 0}`；同一条
+        在 `rank_of` 那里也只判成"未定性"。两处现在都走
+        `tax_evidence.is_practice_layer` 与同一份 `PRACTICE_MARKS`。
+        """
+        问答 = {"title": "货物和劳务税司政策问答：留抵退税的办理口径",
+                "source": "税务总局法规库",
+                "url": "https://fgk.chinatax.gov.cn/zcfgk/c100024/c5245218/content.html",
+                "content": "依据财政部 税务总局公告2023年第19号，留抵退税按此办理"}
+        答疑 = {"title": "12366 答疑：印花税税目税率表怎么用",
+                "source": "国家税务总局",
+                "url": "https://www.chinatax.gov.cn/12366/zcwd.html",
+                "content": "按《印花税法》所附税目税率表执行"}
+        for row in (问答, 答疑):
+            self.assertTrue(ANS._is_practice_row(row), row["title"])
+            r = E.rank_of(row["title"], "", E.practice_text(row))
+            self.assertIn(r["rank"], E.PRACTICE_RANKS, r["by"])
+            self.assertEqual("practice", E.role_of(r["rank"], "effective", True))
+        # 认出来还得真去查：这一条带着文号，核对必须发出去
+        stats, calls = self._核对([问答], 库里=[dict(self.有效件)])
+        self.assertEqual(["财政部 税务总局公告2023年第19号"], calls)
+        self.assertEqual(1, stats["checked"], stats)
+        self.assertEqual("effective", 问答["official_status"]["outcome"], stats)
+        # 反向：法规库里的文件本体不被这套判据拉进实务层
+        本体 = {"title": "中华人民共和国印花税法", "source": "税务总局法规库",
+                "url": "https://fgk.chinatax.gov.cn/zcfgk/c100009/c5000000/content.html"}
+        self.assertFalse(ANS._is_practice_row(本体), "政策问答的标记不能把法律本体认成实务")
+        self.assertEqual("law", E.rank_of(本体["title"], "", E.practice_text(本体))["rank"])
 
     def test_nine_outcomes_are_all_reachable_and_each_has_a_sentence(self):
         """九种结果逐一跑出来，一种都不许只在表里挂着。

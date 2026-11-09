@@ -434,7 +434,7 @@ python scripts/tax_search.py "<关键词>" --status 3 --size 20
 # 税务总局法规库 — 部门规章/公告（目录 + 正文都能取）
 python scripts/tax_fgk.py "<关键词>" --size 10                     # 翻页自适应（默认）
 python scripts/tax_fgk.py "转让定价" --size 3 --pages 8             # 严格翻满 8 页
-python scripts/tax_fgk.py "<关键词>" --size 10 --body      # 同时逐条取详情页正文
+python scripts/tax_fgk.py "<关键词>" --size 10 --body      # 同时取详情页正文（有界并发，上限 4）
 python scripts/tax_fgk.py "<关键词>" --size 10 --cache     # 清单缓存(TTL 1h)，正文仍现拉
 
 # 总局站点检索

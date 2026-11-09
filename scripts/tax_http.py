@@ -177,6 +177,11 @@ TLS_STREAK_LIMIT = 2        # 同一 host 连续两次 TLS 握手失败即判该
 # 就等于"本会话"；跨进程不共享，因为跨进程的 TLS 失败是各进程自己的网络栈问题。
 _tls_streak: dict = {}
 _tls_blocked: set = set()
+#: 取正文改有界并发后，几个线程会同时对同一 host 做 `_tls_streak[host]=get+1`
+#: 这种读-改-写。无锁时几个线程都读到旧值、都写回 old+1，自增被吞（实测 64 线程
+#: 只数到 61），连续失败数到不了阈值、熔断失灵。所有 _tls_streak/_tls_blocked
+#: 的读写都经这把锁；锁只圈住状态变更，不圈 fn() 与 sleep()，并发取数不被串行化。
+_tls_lock = threading.Lock()
 
 #: 值得重发的 HTTP 状态码：429 是限流，5xx 在实测里多是反代抖动而非"这个资源没有"
 RETRY_STATUS = (429, 500, 502, 503)
@@ -229,13 +234,45 @@ def host_of(url: str) -> str:
 
 def reset_tls_state() -> None:
     """清空 TLS 计数与熔断名单（用例复位用；新一轮任务不必调，进程本就新建）。"""
-    _tls_streak.clear()
-    _tls_blocked.clear()
+    with _tls_lock:
+        _tls_streak.clear()
+        _tls_blocked.clear()
 
 
 def tls_blocked(url_or_host: str) -> bool:
     """这一地址本会话是否已判定不可用。"""
-    return host_of(url_or_host) in _tls_blocked
+    with _tls_lock:
+        return host_of(url_or_host) in _tls_blocked
+
+
+def _tls_snapshot(host: str) -> tuple:
+    """读该 host 的 (是否已熔断, 连续失败计数)，供短路分支拼返回值。
+
+    计数取不到时退回 TLS_STREAK_LIMIT，与原先 `_tls_streak.get(host, LIMIT)` 一致。
+    """
+    with _tls_lock:
+        return (host in _tls_blocked, _tls_streak.get(host, TLS_STREAK_LIMIT))
+
+
+def _tls_record_failure(host: str) -> bool:
+    """记一次 TLS 握手失败，返回本会话是否就此判定该 host 不可用。
+
+    自增、阈值判定、写熔断名单在同一把锁里完成：并发取正文时多线同撞一个 host，
+    读-改-写不加锁会丢自增（实测 64 线程只数到 61），阈值也就判不准。
+    """
+    with _tls_lock:
+        streak = _tls_streak.get(host, 0) + 1
+        _tls_streak[host] = streak
+        if streak >= TLS_STREAK_LIMIT:
+            _tls_blocked.add(host)
+            return True
+        return False
+
+
+def _tls_clear(host: str) -> None:
+    """连上了（或这次失败不在 TLS 层）就把该 host 的连续计数清零。"""
+    with _tls_lock:
+        _tls_streak[host] = 0
 
 
 def is_tls_failure(exc: BaseException) -> bool:
@@ -305,8 +342,8 @@ def attempt(fn, url: str, log: list, *, attempts: int = DEFAULT_ATTEMPTS,
     中间夹着一次非 TLS 的失败就重新计数。
     """
     host = host_of(url)
-    if host in _tls_blocked:
-        streak = _tls_streak.get(host, TLS_STREAK_LIMIT)
+    blocked, streak = _tls_snapshot(host)
+    if blocked:
         note_attempt(log, url, "TLS 熔断：本会话未再发请求", 0, streak + 1)
         return (None, f"该通道本会话已判定不可用（连续 {streak} 次 TLS 握手失败）", True)
 
@@ -321,13 +358,11 @@ def attempt(fn, url: str, log: list, *, attempts: int = DEFAULT_ATTEMPTS,
             note_attempt(log, url, type(e).__name__, (time.monotonic() - started) * 1000, nth)
             last_value, last_err = None, short_reason(e)
             if is_tls_failure(e):
-                _tls_streak[host] = _tls_streak.get(host, 0) + 1
-                if _tls_streak[host] >= TLS_STREAK_LIMIT:
-                    _tls_blocked.add(host)
+                if _tls_record_failure(host):
                     return (None, f"该通道本会话已判定不可用（连续 {TLS_STREAK_LIMIT} 次 "
                                   f"TLS 握手失败，末次：{last_err}）", True)
             else:
-                _tls_streak[host] = 0
+                _tls_clear(host)
             if nth < limit:
                 sleep(_wait_seconds(backoff, nth, None))
             continue
@@ -337,14 +372,15 @@ def attempt(fn, url: str, log: list, *, attempts: int = DEFAULT_ATTEMPTS,
         last_value = value
         reason = check(value)
         if not reason:
-            _tls_streak[host] = 0
+            _tls_clear(host)
             return (value, "", False)
         last_err = reason
-        _tls_streak[host] = 0                   # 连上了就不是 TLS 问题
+        _tls_clear(host)                        # 连上了就不是 TLS 问题
         if nth < limit:
             sleep(_wait_seconds(backoff, nth, value))
 
-    if host in _tls_blocked:
+    blocked, _ = _tls_snapshot(host)
+    if blocked:
         return (last_value, f"该通道本会话已判定不可用（连续 {TLS_STREAK_LIMIT} 次 "
                             f"TLS 握手失败）", True)
     return (last_value, f"{limit} 次尝试仍失败：{last_err}", False)

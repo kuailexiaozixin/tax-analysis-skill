@@ -48,6 +48,7 @@ import json
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -232,6 +233,18 @@ def _table_lines(html: str) -> list:
     return out
 
 
+def _end_at(pattern, page: str, start: int) -> int:
+    """正文容器右边界的位置：找得到结束标记就用它，找不到就取到页尾。
+
+    arc_cont 开标签在、却缺 </body> 与后续 arc_cont/bot-btns-box 时，`.search()`
+    回 None，原先直接 `.start()` 会抛 AttributeError，把"页面截断/改版"这类
+    本该归 empty 或 error 的情形变成整个取数崩溃。取到页尾后交给下面的四态判定：
+    容器里有字就 ok、没字就 empty，与完整页面走同一条收口。
+    """
+    m = pattern.search(page, start)
+    return m.start() if m else len(page)
+
+
 def _text_of(fragment: str) -> str:
     fragment = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", fragment)
     parts, pos = [], 0
@@ -337,14 +350,14 @@ def fetch_fgk_body(url: str) -> dict:
     arcs = list(_ARC_OPEN_RE.finditer(page))
     if zs and arcs:
         z = zs[-1]
-        note = page[z.end():_ZS_END_RE.search(page, z.end()).start()]
+        note = page[z.end():_end_at(_ZS_END_RE, page, z.end())]
         a = next((m for m in arcs if m.start() > z.start()), None)
         if a is not None:
-            raw_body = page[a.end():_ARC_END_RE.search(page, a.end()).start()]
+            raw_body = page[a.end():_end_at(_ARC_END_RE, page, a.end())]
             located = True
     elif arcs:
         a = arcs[-1]
-        raw_body = page[a.end():_ARC_END_RE.search(page, a.end()).start()]
+        raw_body = page[a.end():_end_at(_ARC_END_RE, page, a.end())]
         located = True
 
     if not located:
@@ -389,6 +402,38 @@ def fgk_detail_url(column_id: str, article_id: str) -> str:
     return f"{FGK_HOST}/zcfgk/{column_id.lower()}/{article_id.lower()}/content.html"
 
 
+#: 详情页取正文的并发上限。实测口径：fgk.chinatax.gov.cn 详情页 4 条串行 1.69s、
+#: 4 线程并发 0.42s，两边各 4 条全部 ok、0 条 error（同日同端点，每次 GET 间隔 0）。
+#: 站上有串行闸的是 NPC 与搜狗，法规库详情页没有闸；这个数就是实测的那个上限，
+#: 未经重测不再往上加。
+BODY_MAX_WORKERS = 4
+
+
+def _fetch_one_body(url: str) -> dict:
+    """取一条正文；单条异常收成与 fetch_fgk_body 同形的失败结果，不拖垮整批。
+
+    返回形状与 `fetch_fgk_body` 一致（url/body_status/_attempts/_error），
+    调用点按同一套键处理，并发与串行走的是同一条收口。
+    """
+    try:
+        return fetch_fgk_body(url)
+    except Exception as e:                      # 单条失败只影响这一条
+        return {"url": url, "body_status": BODY_ERROR, "_attempts": [],
+                "_error": f"{type(e).__name__}：{e}"[:200]}
+
+
+def _fetch_bodies(urls: list) -> list:
+    """取若干条正文，返回与入参同序的结果列表（有界并发，结果按下标对齐）。
+
+    `ThreadPoolExecutor.map` 本身保序；0/1 条时走直调，不起线程池。
+    台账仍是每条自己的 `_attempts`，并发不改变"谁发了哪几次请求"的记账口径。
+    """
+    if len(urls) <= 1:
+        return [_fetch_one_body(u) for u in urls]
+    with ThreadPoolExecutor(max_workers=min(BODY_MAX_WORKERS, len(urls))) as pool:
+        return list(pool.map(_fetch_one_body, urls))
+
+
 def detail_ids_from_text(text: str) -> list:
     """从一段文本里抠出法规库标识对，按出现顺序去重。
 
@@ -415,9 +460,12 @@ def _direct_entries(keyword: str) -> tuple[list, list, list]:
         不同的下一步。
     """
     entries, attempts, failed = [], [], []
-    for column, article in detail_ids_from_text(keyword):
+    pairs = detail_ids_from_text(keyword)
+    urls = [fgk_detail_url(column, article) for column, article in pairs]
+    # 正文有界并发取，结果与 pairs 同序；每条仍各记自己的尝试台账
+    bodies = _fetch_bodies(urls)
+    for (column, article), body in zip(pairs, bodies):
         url = fgk_detail_url(column, article)
-        body = fetch_fgk_body(url)
         attempts.extend(body.get("_attempts") or [])
         entry = {
             "title": body.get("title", ""),
@@ -787,10 +835,11 @@ def search_fgk(keyword: str, size: int = 10, with_body: bool = False,
 
     # 正文永远现拉，绝不缓存（避免引用过期条文）
     if with_body:
-        for entry in result["results"]:
-            if not entry.get("url"):
-                continue
-            body = fetch_fgk_body(entry["url"])
+        # 先收集要取正文的条目，再按实测允许的上限有界并发取，结果与条目同序套回。
+        # 各站自己的串行闸（NPC、搜狗）不在这一条路径上，这条只并发法规库详情页。
+        targets = [entry for entry in result["results"] if entry.get("url")]
+        bodies = _fetch_bodies([entry["url"] for entry in targets])
+        for entry, body in zip(targets, bodies):
             entry["body"] = body.get("content", "")
             # 判定只认这一个键；body_error 留给人读的那句原因
             entry["body_status"] = body.get("body_status", BODY_ERROR)

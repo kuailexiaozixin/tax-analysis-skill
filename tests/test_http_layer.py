@@ -18,6 +18,7 @@
 import ast
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -239,6 +240,61 @@ class TestShortReason(unittest.TestCase):
         self.assertNotIn("%E5%A2%9E", why)
         self.assertLessEqual(len(why), len("ConnectionError：") + 60)
         self.assertEqual("ConnectionError：HTTPSConnectionPool(host='www.sogou.com', port=443): Max", why)
+
+
+class TestTlsStreakConcurrency(unittest.TestCase):
+    """并发取正文后，TLS 连续失败计数不能丢自增——否则熔断会失灵。
+
+    取正文改成有界并发后，几个线程会同时进 `attempt` 的失败分支，对同一个 host
+    做 `_tls_streak[host] = _tls_streak.get(host, 0) + 1` 这种读-改-写。没有锁保护
+    时，几个线程可能都读到旧值、都写回 old+1，自增被吞掉，连续失败数永远到不了
+    `TLS_STREAK_LIMIT`，本该熔断的通道继续被打。这一条把"每次并发失败都算数"钉住。
+
+    用 Barrier 让 N 个线程同时到达自增点，再把 GIL 切换间隔压到极小，逼调度器在
+    `get` 与 `store` 之间换手，把读-改-写的竞争逼出来；把上限临时抬到极大，让熔断
+    不中途短路，每个线程都真的自增一次。跑多轮，无锁时几乎必丢计数（红），有锁时
+    每轮都恰好等于 N（绿）。这就是锁的证伪点。
+    """
+
+    def test_no_lost_increments_under_concurrent_tls_failures(self):
+        url = "https://fgk.chinatax.gov.cn/zcfgk/c100009/c5193055/content.html"
+        host = tax_http.host_of(url)
+        saved_limit = tax_http.TLS_STREAK_LIMIT
+        saved_interval = sys.getswitchinterval()
+        tax_http.TLS_STREAK_LIMIT = 100000   # 别让熔断中途短路，每个线程都要真的自增
+        sys.setswitchinterval(1e-6)          # 逼 GIL 在读-改-写中间换手，把竞争逼出来
+        n_threads, rounds = 64, 3
+        try:
+            for rnd in range(rounds):
+                tax_http.reset_tls_state()
+                tax_http.reset_ledger()
+                barrier = threading.Barrier(n_threads)
+
+                def boom():
+                    barrier.wait(timeout=10)   # 所有线程同时到达自增点
+                    raise requests.exceptions.SSLError("TLS handshake fail")
+
+                def one():
+                    tax_http.attempt(boom, url, tax_http.new_log(),
+                                     attempts=1, sleep=lambda *_: None)
+
+                threads = [threading.Thread(target=one) for _ in range(n_threads)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=15)
+                self.assertFalse(any(t.is_alive() for t in threads),
+                                 "有线程没跑完，Barrier 或锁可能死锁了")
+                self.assertEqual(
+                    tax_http._tls_streak.get(host, 0), n_threads,
+                    f"第 {rnd + 1} 轮：{n_threads} 个并发 TLS 失败只数到 "
+                    f"{tax_http._tls_streak.get(host, 0)}，读-改-写丢了自增——"
+                    f"没有锁保护，熔断在并发下会失灵")
+        finally:
+            tax_http.TLS_STREAK_LIMIT = saved_limit
+            sys.setswitchinterval(saved_interval)
+            tax_http.reset_tls_state()
+            tax_http.reset_ledger()
 
 
 def main():

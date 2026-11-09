@@ -26,9 +26,14 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
+
+import requests  # 重试/熔断用例直接抛 requests.exceptions.*，须真名在场
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
@@ -36,6 +41,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import tax_fgk  # noqa: E402
+import tax_http  # noqa: E402  重试退避、TLS 熔断、会话台账（#104 与四态用例读它）
+import tax_evidence  # noqa: E402  body_in_attachment 判据与人大库详情共用一份
 import tax_web_search  # noqa: E402  清单层行构造（attachments）在这边，字段转发过去
 from tax_fgk import (  # noqa: E402
     CACHE_TTL, MAX_PAGES, PAGE_SIZE, fetch_fgk_body, search_fgk,
@@ -1069,7 +1076,8 @@ def test_retry_records_attempts_and_last_reason():
         assert r["body_status"] == "ok", r
         assert state["n"] == 3, f"应发满三次，实际 {state['n']}"
         assert [x[3] for x in r["_attempts"]] == [1, 2, 3], r["_attempts"]
-        assert [x[1] for x in r["_attempts"]] == ["ConnectTimeout", "ConnectTimeout", 200], r["_attempts"]
+        # 状态码经 note_attempt 归一成字符串标签，与异常类名同列（outcome: str）
+        assert [x[1] for x in r["_attempts"]] == ["ConnectTimeout", "ConnectTimeout", "200"], r["_attempts"]
         assert r["_attempts"][0][0] == "fgk.chinatax.gov.cn", r["_attempts"]
         assert all(isinstance(x[2], int) for x in r["_attempts"]), r["_attempts"]
 
@@ -1079,7 +1087,7 @@ def test_retry_records_attempts_and_last_reason():
         assert bad["body_status"] == "error", bad
         assert bad["_error"].startswith(f"{tax_http.DEFAULT_ATTEMPTS} 次尝试仍失败：HTTP 502"), bad
         assert len(bad["_attempts"]) == tax_http.DEFAULT_ATTEMPTS, bad["_attempts"]
-        assert all(x[1] == 502 for x in bad["_attempts"]), bad["_attempts"]
+        assert all(x[1] == "502" for x in bad["_attempts"]), bad["_attempts"]
 
         # ③ 会话级台账把所有尝试都记下来（取数函数不便带键时靠它交账）
         assert tax_http.ledger_size() == len(r["_attempts"]) + len(bad["_attempts"]), \
@@ -1091,10 +1099,13 @@ def test_retry_records_attempts_and_last_reason():
 
 
 def test_tls_short_circuit_skips_third_request():
-    """同一 host 连续两次 TLS 握手失败后，本会话不再发第三个请求。
+    """同一 host 连续两次 TLS 握手失败后，本会话不再对它开套接字。
 
     对应的坑：上一轮在 www.chinatax.gov.cn 上连撞 8 次 SSLError，每次都真发一次
-    请求、真等一次超时。短路之后第三次连套接字都不开。
+    请求、真等一次超时。生产口径是 DEFAULT_ATTEMPTS=3、TLS_STREAK_LIMIT=2：
+    第一次取数在调用内重试一次，连撞两次 TLS 即熔断（发过 2 次请求）；此后同一
+    host 的取数一律短路，套接字都不开。所以第一次发 2 次、第二三次各发 0 次。
+    去掉熔断后第二三次会继续真发请求，calls 涨过 2——本用例即据此证伪。
     """
     saved_base = tax_http.BACKOFF_BASE
     tax_http.BACKOFF_BASE = 0.0
@@ -1109,15 +1120,17 @@ def test_tls_short_circuit_skips_third_request():
 
         with _patched(**{"requests.get": ssl_fail}):
             first = fetch_fgk_body(FGK_URL)
-            assert len(calls) == 1, calls
+            assert len(calls) == 2, f"首次取数应连撞两次 TLS 即熔断，实际发过 {len(calls)} 次"
             second = fetch_fgk_body(FGK_URL)
-            assert len(calls) == 2, f"第二次仍应真发请求，实际发过 {len(calls)} 次"
+            assert len(calls) == 2, f"已熔断后第二次不该再上网，实际发过 {len(calls)} 次"
             third = fetch_fgk_body(FGK_URL)
         assert len(calls) == 2, f"第三次不该再上网，实际发过 {len(calls)} 次"
+        assert "本会话已判定不可用" in first["_error"], first
+        assert "本会话已判定不可用" in second["_error"], second
         assert "本会话已判定不可用" in third["_error"], third
-        assert third["body_status"] == "error", third
         assert first["body_status"] == "error" and second["body_status"] == "error"
-        # 熔断这一条也进台账，且标着"未再发请求"，不会被读成一次真实网络往返
+        assert third["body_status"] == "error", third
+        # 短路这一条也进台账，且标着"未再发请求"，不会被读成一次真实网络往返
         assert "熔断" in third["_attempts"][-1][1], third["_attempts"]
     finally:
         tax_http.BACKOFF_BASE = saved_base
@@ -1214,6 +1227,82 @@ def test_body_in_attachment_derived_from_attachments():
 
 # ── 入口 ────────────────────────────────────────────────────────────────────
 
+def _concurrency_probe(sleep_s: float = 0.15):
+    """造一个假 requests.get：记同一时刻在跑的请求数峰值，并按 URL 回不同正文。
+
+    峰值用来判"是不是真并发"——串行跑峰值恒为 1，有界并发会大于 1。每条 URL 的
+    正文与标题都嵌进它自己的文章 id，用来判"并发有没有把正文接错条目"。sleep 把
+    一次请求拉长到足以让几个线程重叠，峰值才量得准。
+    """
+    state = {"active": 0, "max": 0}
+    lock = threading.Lock()
+
+    def fake_get(url, **kw):
+        with lock:
+            state["active"] += 1
+            state["max"] = max(state["max"], state["active"])
+        try:
+            time.sleep(sleep_s)
+            m = re.search(r"/(c\d+)/content\.html", url)
+            tag = m.group(1) if m else "x"
+            return _Resp(_detail_html(f"<p>正文标记 {tag}</p>", title=f"标题-{tag}"))
+        finally:
+            with lock:
+                state["active"] -= 1
+
+    return fake_get, state
+
+
+def test_body_fetch_runs_concurrently_and_preserves_order():
+    """取正文要有界并发，且并发不能把条目顺序、正文归属与尝试台账弄乱。
+
+    钉三件事，缺一件这次提速就是拿质量换的：
+      1. 同一时刻在跑的正文请求数峰值 > 1（串行恒为 1，这一条就是并发的证伪点）；
+      2. 结果条目仍按清单原序，每条正文接的是它自己那条 URL（并发最容易接错位）；
+      3. 轮次级 `_attempts` 把每条正文的那一次请求都收齐，一条不漏、一条不重。
+    两条取正文的路都测：search_fgk(with_body=True) 与检索失败后的 _direct_entries。
+    """
+    # ① search_fgk(with_body=True)：4 条法规库条目，逐条取正文
+    fake, _ = _make_fake_search({1: 4})
+    want_urls = [_fgk_item(1, i)["url"] for i in range(4)]
+    probe, state = _concurrency_probe()
+    with _temp_cache():
+        with _patched(search_chinatax=fake, **{"requests.get": probe}):
+            r = search_fgk("测试词", size=4, with_body=True)
+    assert state["max"] > 1, \
+        f"正文请求峰值={state['max']}，仍是串行；提速没落地（并发峰值应 > 1）"
+    assert [e["url"] for e in r["results"]] == want_urls, \
+        f"并发把条目顺序打乱了：{[e['url'] for e in r['results']]}"
+    for i, entry in enumerate(r["results"]):
+        tag = re.search(r"/(c\d+)/content\.html", want_urls[i]).group(1)
+        assert f"正文标记 {tag}" in entry.get("body", ""), \
+            f"第 {i} 条正文接错了 URL：{entry.get('body', '')!r}"
+        assert entry.get("body_status") == tax_fgk.BODY_OK, entry
+    fgk_attempts = [a for a in r["_attempts"] if a[0] == "fgk.chinatax.gov.cn"]
+    assert len(fgk_attempts) == 4, \
+        f"4 条正文各一次请求，台账应收齐 4 条，实际 {len(fgk_attempts)}：{r['_attempts']}"
+    print(f"  [PASS] with_body 并发取正文：峰值 {state['max']}，4 条原序、正文各归其位、台账 4 条")
+
+    # ② _direct_entries：检索词里带 4 个标识对，直达详情页同样要有界并发
+    ids = [("c100009", "c5193055"), ("c100024", "c5245218"),
+           ("c100009", "c5193058"), ("c100009", "c5237365")]
+    keyword = " ".join(f"{c}/{a}" for c, a in ids)
+    probe2, state2 = _concurrency_probe()
+    with _patched(**{"requests.get": probe2}):
+        entries, attempts, failed = tax_fgk._direct_entries(keyword)
+    assert state2["max"] > 1, \
+        f"直达正文请求峰值={state2['max']}，仍是串行（并发峰值应 > 1）"
+    assert not failed, f"四条都该取回，实际失败：{failed}"
+    assert [e["url"] for e in entries] == [tax_fgk.fgk_detail_url(c, a) for c, a in ids], \
+        f"直达条目顺序被打乱：{[e['url'] for e in entries]}"
+    for e, (c, a) in zip(entries, ids):
+        assert e["title"] == f"标题-{a}", f"直达标题接错位：{e['title']!r} 应为 标题-{a}"
+        assert e["_body_status"] == tax_fgk.BODY_OK, e
+    assert len(attempts) == 4, f"直达 4 条各一次请求，台账应 4 条，实际 {len(attempts)}"
+    print(f"  [PASS] _direct_entries 并发取正文：峰值 {state2['max']}，4 条原序、标题各归其位、台账 4 条")
+    return True
+
+
 def main():
     tests = [
         ("FGK_MARKER 自检", test_fgk_marker_selfcheck),
@@ -1244,6 +1333,12 @@ def main():
         ("关联解析实测形态", test_fetch_associations_parses_measured_payload),
         ("关联失败路径报错", test_fetch_associations_error_paths),
         ("逐条现拉关联", test_attach_associations_runs_per_entry_without_body),
+        ("正文取回四态分开", test_body_status_names_the_four_outcomes),
+        ("重试退避与尝试台账", test_retry_records_attempts_and_last_reason),
+        ("TLS 连续失败熔断短路", test_tls_short_circuit_skips_third_request),
+        ("检索失败按标识直达详情页", test_search_failure_directly_hits_detail_page_by_ids),
+        ("body_in_attachment 由附件派生", test_body_in_attachment_derived_from_attachments),
+        ("取正文有界并发且保序", test_body_fetch_runs_concurrently_and_preserves_order),
     ]
 
     all_passed = 0

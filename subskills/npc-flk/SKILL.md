@@ -98,8 +98,18 @@ description: |
 - 详情走 `GET /law-search/search/flfgDetails?bbbs=<法规ID>`。`ossWordPath`／`ossPdfPath` 嵌在
   `data.ossFile` 对象下，不在 `data` 顶层——按顶层取会静默拿到空串，于是下载只报「No download URL」；
   `content` 是单个节点对象而不是数组，取正文要按节点展开（`_flatten_content`）。
-- `--info` 回的不是摘要，`--preview` 才是摘要；全文要 `--download`（docx／pdf），
-  **用户确认之后才执行**这一步。下载件用 `_parse_docx_from_bytes` 解出段落（纯标准库，不装依赖）。
+- `--info` 回的是元数据，`--preview` 回法条数、编号形态、前十条，**外加正文里的日期沿革**；
+  整篇全文要 `--download`（docx／pdf），**用户确认之后才执行**这一步。下载件用
+  `_parse_docx_from_bytes` 解出段落（纯标准库，不装依赖）。
+- **定施行日期或分清版本用 `--preview`，不要再 `--download` 一遍**：`preview_law` 已经把 docx
+  下过一趟并在内存里解，`tax_detail.law_date_lineage` 从同一份段落里读出题注（原公布/通过日、
+  逐次修订的日期与文件名）与末条施行句，随 `date_lineage`／`date_note` 交出。
+  **录入项那两个日期与正文里的日期不相等时，多半不是哪一处错了**：录入项跟的是题注里最近那次
+  修订／修正的那一版，末条施行句跟的是原初版，两处各说各的。所以这一句只摆两处日期各自的出处，
+  不判哪一处对，也不拿正文覆盖录入项；题注里有修订记录时不再追一句"核对是否指同一次施行"，
+  那等于把刚给出的结论又推回给读者。正文没取到时把原因写进 `date_note`，不写成"这份正文没有题注"。
+  末条施行句里紧跟的「《某暂行条例》同时废止」那一句若带日期，说的是被废止的那份，不是本篇起日。
+  五份实测读数（含四种形态各自的 `date_note`、`bbbs` 与复测命令）在 `NOTE.md` 第四节。
 - 关联件四类各一栏，都在详情响应里：`xgwj`（相关文件）、`lsyg`（历史沿革，即被废止／被修改的那一版）、
   `xgzl`（修改资料）、`flfg`（制定依据）。一份法规"现行版在哪、哪一版被它顶掉"读这一层，
   检索清单层读不出这四组。
@@ -135,7 +145,7 @@ python scripts/tax_search.py "增值税" --json                               # 
 
 # 详情与下载
 python scripts/tax_detail.py --info <法规ID>              # 元数据 + 四类关联 + 正文树
-python scripts/tax_detail.py --preview <法规ID>           # 摘要，不是全文
+python scripts/tax_detail.py --preview <法规ID>           # 法条数、前十条 + 题注与末条施行句的日期沿革
 python scripts/tax_detail.py --download <法规ID>          # 全文 docx；用户确认后才执行
 python scripts/tax_detail.py --download <法规ID> --format pdf
 python scripts/tax_detail.py --cache-stats / --cache-clear
@@ -157,7 +167,7 @@ python -c "import requests,json;r=requests.get('https://flk.npc.gov.cn/law-searc
 | 值域的来源 | 分类树与状态值域都在 `GET /law-search/search/enumData`（回 `flfgfl`、`zdjgfl`、`flcaStatus` 三枚键，第三枚回 `0` 不是时效） | 界面上那些下拉框是这一枚接口渲染出来的 |
 | 每页条数 | 照请求给行，本层 `min(size, 100)`；上限未探 | 见第二步 |
 | 编码 | 接口回 JSON 带 charset；下载件是 docx／pdf 字节，段落由 `_parse_docx_from_bytes` 解 | 见第五步 |
-| 时效与日期字段 | `sxx`（四个状态整数）、`gbrq`（公布日期）、`sxrq`（施行日期） | `tax_detail.SXX_MAP` 是这四个状态的唯一对照表 |
+| 时效与日期字段 | `sxx`（四个状态整数）、`gbrq`（公布日期）、`sxrq`（施行日期）；这三枚是**收录版本**的录入项，正文题注与末条施行句里的日期另算一层，由 `law_date_lineage` 读 | `tax_detail.SXX_MAP` 是这四个状态的唯一对照表；两处日期各指哪一版见第五步与 `NOTE.md` 第四节 |
 
 ## 边界：这一层不给什么
 

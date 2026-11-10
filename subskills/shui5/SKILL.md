@@ -33,6 +33,7 @@ description: |
 | 不检索，直接把某一栏的清单读几页 | `tax_shui5.list_column(栏目, pages=N)`，命令行 `--list` | 一份放行 cookie |
 | 不检索，按站点自己在用的标签读清单 | `tax_shui5.list_tag(标签, pages=N)`，命令行 `--tag`；标签名没有清单可枚举，只能 `tags_of(页面)` 从链接里取 | 一份放行 cookie |
 | 这一栏的目录名、classid、页数条数 | `load_columns()` / `resolve_column()` 读 `data/shui5_columns.json` | 读表不发请求；重建（`--update-columns`）才要凭据 |
+| 一个专题要几枚词，想一轮拿回去重后的候选清单 | `tax_shui5.search_many(词列表)`，命令行给几个位置参数；逐词检索、按 URL 去重、每条记 `matched_keywords`，`read_body=True` 时去重后的正文合成一次连读 | 清单走搜狗时不需要；取正文或走站内要一份放行 cookie，整批只过一次 |
 | 只读已知 URL 的正文 | `tax_shui5.fetch_shui5` / `read_articles` | 一份放行 cookie |
 
 **第二步 取放行凭据**：`tax_browser.BrowserSession` 用 `executable_path` 驱动本机已装
@@ -56,7 +57,13 @@ description: |
 `_status` 一起交出，上层不用翻文档就知道 0 条有两种成因。
 检索词的写法只有一条：**站点按整串匹配，空格是查询串的一部分，不是 AND 的连接符**——
 「留抵退税」420 条而「留抵 退税」0 条，「法理阐释」1 条而「法理阐释 增值税留抵退税」0 条。
-一个概念一个词，要两个概念就分两次检索再把行并起来。表单字段与行容器判据在
+一个概念一个词，要两个概念就交给 `search_many`（命令行几个位置参数）一轮发完，它逐词检索、
+按 URL 去重成一张清单、每条记下自己被哪几枚词命中，不在会话里一词发一次。
+**先只要清单、看过再决定读哪几篇更省**：清单走搜狗那一轮不取正文就不必过 WAF，
+而取正文那一轮无论清单从哪条通道来都要过一次（2026-11-10 实测三枚词：只要清单 WAF 0 次、
+15 行去重成 12 条；带 `--read` 同一批 WAF 1 次 14.9 秒、正文读 12 次其中 10 条有正文，
+另 2 条是栏目页；单词一轮带 `--read` 的对照是 WAF 1 次 8.8 秒、正文 5 次）。
+表单字段与行容器判据在
 `tax_shui5.SEARCH_FIELDS` 与 `_ROW_*_RE`，改版时先比 `NOTE.md` 的读数再动这几个常量。
 
 站内那一路能把四件事下推给服务端，各自的边界是实测出来的（逐项读数在 `NOTE.md`
@@ -131,6 +138,8 @@ description: |
 ```bash
 # 检索并按篇取正文（一次过 WAF）
 python scripts/tax_shui5.py "研发费用加计扣除" --size 5 --read
+python scripts/tax_shui5.py "碳排放权交易" "碳交易" "自愿减排" --size 5        # 多词一轮，先去重成候选清单（不取正文不必过 WAF）
+python scripts/tax_shui5.py "碳排放权交易" "碳交易" "自愿减排" --size 5 --read  # 同上，去重后的正文合成一次连读
 python scripts/tax_shui5.py --find-doc "财税[2019]13号"              # 按文号定位（默认交 20 条候选）
 python scripts/tax_shui5.py "<关键词>" --size 5 --json                # 只要链接与标题，不启浏览器
 python scripts/tax_shui5.py "留抵退税" --channel native --size 10     # 只走站内原生检索

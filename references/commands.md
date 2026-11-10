@@ -274,6 +274,8 @@ python scripts/tax_sogou.py "<关键词> 税收 政策解读" --size 10
 ## L4：税屋与公众号（实务案例与解读）
 
 ```bash
+python scripts/tax_shui5.py "<词一>" "<词二>" "<词三>" --size 5    # 同专题多词一轮：按 URL 去重成一张候选清单，先看过再决定读哪几篇（这一档不取正文就不必过 WAF）
+python scripts/tax_shui5.py "<词一>" "<词二>" "<词三>" --size 5 --read  # 同上并把去重后的正文合成一次连读，WAF 只过一次
 python scripts/tax_shui5.py "<关键词>" --size 5 --read    # 税屋：连正文一起取（推荐）
 python scripts/tax_shui5.py "<关键词>" --channel sogou --size 5    # 只走搜狗 site:，不要凭据、不启浏览器
 python scripts/tax_shui5.py "<关键词>" --channel native --size 5   # 只走站内搜索，带日期/摘要/栏目

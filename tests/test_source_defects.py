@@ -3457,6 +3457,547 @@ class TestFlkTotalIsNotTheEchoedHitCount(unittest.TestCase):
         self.assertIn("本屏 20 条", out)
 
 
+# ── 同一专题的多枚词一轮发：WAF 与正文连读都只付一次 ────────────────────────
+class _Shui5BatchOffline(unittest.TestCase):
+    """打桩到网络边界（搜狗／站内／正文页），不联网、不开浏览器。
+
+    改前的形状：CLI 只收一枚词，同一专题的三枚词要发三次进程，站内检索与正文
+    连读各自过一次 WAF（`read_articles` 的 docstring 记的是浏览器预热 5.9~7.0 秒）。
+    主线 ③ 末段要求"在同一条脚本里按词循环"，而脚本没有这一档，纪律落不了地。
+    """
+
+    WORDS = ["碳排放权交易", "碳交易", "自愿减排"]
+    URLS = {"碳排放权交易": ["https://www.shui5.cn/article/1/101.html",
+                             "https://www.shui5.cn/article/2/102.html"],
+            "碳交易": ["https://www.shui5.cn/article/2/102.html",
+                       "https://www.shui5.cn/article/3/103.html"],
+            "自愿减排": ["https://www.shui5.cn/article/4/104.html"]}
+
+    def setUp(self):
+        self.waf_calls = []
+        self.native_sessions = []
+        self.fetch_calls = []
+        self.sleeps = []
+        self.session = mock.MagicMock(name="waf-session")
+        self.sogou_ok = False
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(SH, "_pass_waf", side_effect=self._waf).start()
+        mock.patch.object(SH, "sogou_search", side_effect=self._sogou).start()
+        mock.patch.object(SH, "search_native", side_effect=self._native).start()
+        mock.patch.object(SH, "fetch_shui5", side_effect=self._fetch).start()
+        mock.patch.object(SH.time, "sleep",
+                          side_effect=lambda s: self.sleeps.append(s)).start()
+
+    def _waf(self, warm_url=""):
+        self.waf_calls.append(warm_url)
+        return self.session, "打桩过 WAF"
+
+    def _sogou(self, keyword, site=None, size=5):
+        if not self.sogou_ok:
+            return {"results": [], "_error": "打桩：搜狗这一路没取到", "_blocked": True}
+        return {"results": [{"title": keyword + "（搜狗）",
+                             "url": self.URLS[keyword][0], "date": "2026-01-01",
+                             "snippet": "摘要"}],
+                "searched_at": "2026-11-10 00:00:00", "_from_cache": False}
+
+    def _native(self, keyword, size=5, session=None, **kw):
+        self.native_sessions.append(session)
+        if session is None:
+            # 真 search_native 在没有外部会话时自己过一次 WAF，桩要照做，
+            # 否则"首词退回站内付了几次预热"这一格量的是桩而不是代码。
+            session, _ = self._waf()
+        urls = self.URLS[keyword][:size]
+        return {"results": [{"title": keyword + "-" + u.rsplit("/", 1)[-1],
+                             "url": u, "date": "2026-01-02", "snippet": "摘要",
+                             "column": "实务解读"} for u in urls],
+                "total": len(urls), "_status": f"命中 {len(urls)} 条"}
+
+    def _fetch(self, url, session=None, page_interval=None):
+        self.fetch_calls.append((url, session))
+        return {"url": url, "content": "正文-" + url.rsplit("/", 1)[-1],
+                "title": "", "date": "", "pages": 1}
+
+    def _run(self, **kw):
+        args = dict(size=5, read_body=True, channel="native")
+        args.update(kw)
+        return SH.search_many(self.WORDS, **args)
+
+
+class TestShui5BatchOneWafPass(_Shui5BatchOffline):
+
+    def test_three_words_pass_waf_once(self):
+        self._run()
+        self.assertEqual(1, len(self.waf_calls),
+                         "三枚词各过一次 WAF 就是把 6 秒乘以词数：%s" % self.waf_calls)
+
+    def test_every_search_reuses_the_same_session(self):
+        self._run()
+        self.assertEqual([self.session] * 3, self.native_sessions)
+
+    def test_bodies_are_read_once_per_unique_url(self):
+        got = self._run()
+        self.assertEqual(4, len(self.fetch_calls),
+                         "两枚词共有的那一篇被读了两次：%s" % self.fetch_calls)
+        self.assertEqual(4, len(got["results"]))
+        self.assertTrue(all(r.get("content") for r in got["results"]))
+
+    def test_shared_url_records_both_keywords(self):
+        got = self._run()
+        row = next(r for r in got["results"] if r["url"].endswith("/102.html"))
+        self.assertEqual(["碳排放权交易", "碳交易"], row["matched_keywords"])
+
+    def test_site_declared_search_gap_is_kept_between_words(self):
+        self._run()
+        self.assertEqual(2, self.sleeps.count(SH.SEARCH_MIN_GAP),
+                         "三枚词之间要留两次站点声明的检索间隔：%s" % self.sleeps)
+
+    def test_per_keyword_attribution_survives_the_merge(self):
+        got = self._run()
+        self.assertEqual(self.WORDS, [p["keyword"] for p in got["_per_keyword"]])
+        self.assertEqual([2, 2, 1], [p["total"] for p in got["_per_keyword"]])
+        self.assertEqual(4, got["total"], "total 是去重后的篇数，不是各词命中数之和")
+
+    def test_session_it_passed_is_closed_once(self):
+        self._run()
+        self.assertEqual(1, self.session.close.call_count)
+
+    def test_empty_word_list_is_refused(self):
+        for words in ([], ["", "  "], None):
+            with self.assertRaises(ValueError):
+                SH.search_many(words)
+
+    def test_duplicate_and_blank_words_are_folded_before_searching(self):
+        got = SH.search_many(["碳交易", " 碳交易 ", "", "自愿减排"],
+                             size=5, read_body=False, channel="native")
+        self.assertEqual(["碳交易", "自愿减排"], got["keywords"])
+        self.assertEqual(1, len(self.waf_calls))
+
+
+class TestShui5BatchChannelCost(_Shui5BatchOffline):
+
+    def test_sogou_success_without_bodies_does_not_pay_for_waf(self):
+        self.sogou_ok = True
+        self._run(channel="auto", read_body=False)
+        self.assertEqual([], self.waf_calls,
+                         "搜狗这一路不要凭据，没必要为它过一次浏览器 WAF")
+
+    def test_auto_fallback_to_native_shares_one_waf_for_the_rest(self):
+        """首词退回站内时它自己已经过一次 WAF，那份会话不外传；剩下的词共用一份。
+
+        三枚词从三次降到两次。要一次就得让 search_shui5 把内部建的会话交回来，
+        那是另一处契约改动，不在这一档里。
+        """
+        self._run(channel="auto", read_body=False)
+        self.assertEqual(2, len(self.waf_calls))
+        self.assertEqual([None, self.session, self.session], self.native_sessions)
+
+    def test_bodies_need_waf_even_when_sogou_supplied_the_list(self):
+        self.sogou_ok = True
+        got = self._run(channel="auto", read_body=True)
+        self.assertEqual(1, len(self.waf_calls))
+        self.assertEqual(3, len(self.fetch_calls))
+        self.assertTrue(all(r.get("content") for r in got["results"]))
+
+    def test_read_articles_does_not_close_a_borrowed_session(self):
+        borrowed = mock.MagicMock(name="borrowed")
+        SH.read_articles(["https://www.shui5.cn/article/1/101.html"], session=borrowed)
+        self.assertEqual(0, borrowed.close.call_count)
+        self.assertEqual([], self.waf_calls)
+        self.assertIs(borrowed, self.fetch_calls[0][1])
+
+    def test_read_articles_still_passes_and_closes_its_own_session(self):
+        SH.read_articles(["https://www.shui5.cn/article/1/101.html"])
+        self.assertEqual(1, len(self.waf_calls))
+        self.assertEqual(1, self.session.close.call_count)
+
+
+class TestShui5BatchCli(_Shui5BatchOffline):
+    """命令行真收得下多枚词：纪律写在文档里不够，得能照着发。"""
+
+    def _cli(self, argv):
+        buf = io.StringIO()
+        with mock.patch.object(sys, "argv", ["tax_shui5.py"] + argv):
+            with contextlib.redirect_stdout(buf):
+                SH.main()
+        return buf.getvalue()
+
+    def test_multiple_positionals_take_the_batch_path(self):
+        out = self._cli(self.WORDS + ["--size", "5", "--read", "--channel", "native"])
+        self.assertEqual(1, len(self.waf_calls))
+        self.assertEqual(4, len(self.fetch_calls))
+        for w in self.WORDS:
+            self.assertIn(w, out)
+
+    def test_single_positional_keeps_the_existing_path(self):
+        with mock.patch.object(SH, "search_many",
+                               side_effect=AssertionError("单词不该走批量")) as many:
+            self._cli(["碳交易", "--size", "5", "--read", "--channel", "native"])
+        self.assertEqual(0, many.call_count)
+        self.assertEqual(2, len(self.fetch_calls))
+        # 单词那条路保持原样：站内检索与正文连读各过一次 WAF。这正是多词那一档
+        # 要省掉的开销，不该顺手改掉单词路的既有行为。
+        self.assertEqual(2, len(self.waf_calls))
+
+    def test_batch_json_carries_per_keyword_blocks(self):
+        buf = io.StringIO()
+        with mock.patch.object(sys, "argv",
+                               ["tax_shui5.py"] + self.WORDS + ["--channel", "native", "--json"]):
+            with contextlib.redirect_stdout(buf):
+                SH.main()
+        got = json.loads(buf.getvalue())
+        self.assertEqual(self.WORDS, got["keywords"])
+        self.assertEqual(3, len(got["_per_keyword"]))
+
+
+# ── search5 空格多词是任一词命中：把这一轮被谁主导当场说出来 ────────────────
+class _Search5Resp:
+    """search5 的响应形状：清单与总数都在 searchResultAll 下。"""
+
+    def __init__(self, titles, total):
+        self.status_code = 200
+        self._payload = {"searchResultAll": {
+            "total": total,
+            "searchTotal": [{"title": t, "url": f"https://fgk.chinatax.gov.cn/{i}.html",
+                             "content": "摘要", "pubDate": "2023-01-01",
+                             "pubName": "财政部 税务总局"}
+                            for i, t in enumerate(titles)]}}
+
+    def json(self):
+        return self._payload
+
+
+class TestSearch5MultiTermNote(unittest.TestCase):
+    """2026-11-10 本机实测（search_chinatax，size=10，FILE_LABELS 默认档）：
+
+        检索词              收窄                命中    首屏标题含「碳排放」
+        碳排放权 增值税     无                  1911    0/10
+        碳排放权 增值税     wordPlace=1          909    0/10
+        碳排放权 增值税     participleRule=5      73    0/10
+        碳排放权            无                     1    0/1（正文命中）
+
+    四发的首屏标题里都数不出专题词。空格不是 AND，专题词被税种词顶掉；仅标题匹配
+    也救不回来。但 `participleRule=5` 那一发把单独发「碳排放权」命中的那一份
+    （`c100013/c5194808`，标题里两枚词都不含、命中在正文）升到了首屏第 3 位——
+    所以"标题里 0 条"不能写成"首屏里没有这一份"。这一格不多发请求，
+    只用已经取回的那一页把成因说清楚。
+    """
+
+    TITLES = ["财政部 税务总局关于增值税小规模纳税人减免增值税政策的公告",
+              "财政部 税务总局关于对增值税小规模纳税人免征增值税的公告",
+              "财政部 税务总局关于明确增值税小规模纳税人免征增值税政策的公告"] * 3 + [
+              "财政部 税务总局关于明确增值税小规模纳税人减免增值税等政策的公告"]
+
+    def setUp(self):
+        self.calls = []
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(WS.tax_http, "attempt", side_effect=self._attempt).start()
+        mock.patch.object(WS.tax_http, "new_log", return_value=[]).start()
+
+    def _attempt(self, fn, url, log, **kw):
+        self.calls.append(url)
+        return self.resp, "", False
+
+    def _search(self, keyword, titles=None, total=1911, **kw):
+        self.resp = _Search5Resp(self.TITLES if titles is None else titles, total)
+        return WS.search_chinatax(keyword, size=10, **kw)
+
+    def test_absent_topic_word_is_named_with_its_zero_count(self):
+        got = self._search("碳排放权 增值税")
+        note = got.get("_keyword_note", "")
+        self.assertTrue(note, "首屏 0/10 含专题词却不吭声，读者只能自己逐条看标题")
+        self.assertIn("碳排放权", note)
+        self.assertIn("0 条", note)
+        self.assertIn("1911", note)
+        self.assertIn("任一词命中", note)
+        self.assertIn("--precise", note)
+
+    def test_absent_word_is_scoped_to_titles_not_to_the_whole_first_screen(self):
+        """计数只看标题，结论也只能说到标题这一层。
+
+        2026-11-10 实测：加 `participleRule=5` 后首屏第 3 位就是单独发「碳排放权」
+        命中的那一份（`fgk.chinatax.gov.cn/zcfgk/c100013/c5194808/content.html`），
+        而它的标题里既不含「碳排放权」也不含「增值税」——命中在正文。写成
+        「在首屏没有条目」就把一份已经在首屏里的文件说成了不在。
+        """
+        titles = self.TITLES[:9] + ["国家发展改革委关于创新和完善促进绿色发展价格机制的意见"]
+        got = self._search("碳排放权 增值税", titles=titles, total=73)
+        note = got["_keyword_note"]
+        self.assertNotIn("在首屏没有条目", note,
+                         "标题里 0 命中不等于首屏里没有这一份：正文命中的那一份就在第 10 位")
+        self.assertIn("首屏标题里没有条目", note)
+
+    def test_note_says_title_match_does_not_change_the_semantics(self):
+        got = self._search("碳排放权 增值税")
+        self.assertIn("--in-title", got["_keyword_note"])
+        self.assertIn("不改任一词命中", got["_keyword_note"])
+
+    def test_it_costs_no_extra_request(self):
+        self._search("碳排放权 增值税")
+        self.assertEqual(1, len(self.calls), "诊断只用已取回的那一页，不许再发一轮")
+
+    def test_single_term_gets_no_note(self):
+        self.assertNotIn("_keyword_note", self._search("增值税"))
+
+    def test_all_terms_present_gets_no_note(self):
+        titles = ["碳排放权交易的增值税处理", "碳排放权增值税口径"]
+        self.assertNotIn("_keyword_note", self._search("碳排放权 增值税", titles=titles))
+
+    def test_genuine_zero_hits_get_no_note(self):
+        self.assertNotIn("_keyword_note",
+                         self._search("碳排放权 增值税", titles=[], total=0))
+
+    def test_no_term_in_any_title_is_reported_as_such_not_as_a_dominant_word(self):
+        titles = ["财政部 税务总局公告2023年第19号"] * 10
+        note = self._search("碳排放权 增值税", titles=titles)["_keyword_note"]
+        self.assertIn("正文", note)
+        self.assertNotIn("主导", note)
+
+    def test_terms_split_on_any_whitespace_and_drop_blanks(self):
+        self.assertEqual(["碳排放权", "增值税"], WS.keyword_terms(" 碳排放权\t增值税\n"))
+        self.assertEqual(["增值税"], WS.keyword_terms("增值税"))
+        self.assertEqual([], WS.keyword_terms("   "))
+
+    def test_cli_prints_the_note(self):
+        self.resp = _Search5Resp(self.TITLES, 1911)
+        buf = io.StringIO()
+        with mock.patch.object(sys, "argv",
+                               ["tax_web_search.py", "碳排放权 增值税", "--size", "10"]):
+            with contextlib.redirect_stdout(buf):
+                WS.main()
+        self.assertIn("任一词命中", buf.getvalue())
+
+    def test_json_carries_the_note(self):
+        got = self._search("碳排放权 增值税")
+        self.assertIn("_keyword_note", json.loads(json.dumps(got, ensure_ascii=False)))
+
+
+# ── NPC 正文日期与版本沿革：一趟取回，别再多下一遍 ─────────────────────────
+# 下面五份题注与施行句都是 2026-11-10 从 flk 下载的 docx 里逐字取的原文。
+_CARBON_CAPTION = ("（2024年1月25日中华人民共和国国务院令第775号公布\u3000"
+                   "根据2026年8月8日《国务院关于修改和废止部分行政法规的决定》修订）")
+_CARBON_EFFECTIVE = "第三十三条\u3000本条例自2024年5月1日起施行。"
+_VAT_CAPTION = "（2024年12月25日第十四届全国人民代表大会常务委员会第十三次会议通过）"
+_VAT_EFFECTIVE = ("第三十八条\u3000本法自2026年1月1日起施行。"
+                  "《中华人民共和国增值税暂行条例》同时废止。")
+_COLLECTION_CAPTION = (
+    "（1992年9月4日第七届全国人民代表大会常务委员会第二十七次会议通过\u3000"
+    "根据1995年2月28日第八届全国人民代表大会常务委员会第十二次会议"
+    "《关于修改〈中华人民共和国税收征收管理法〉的决定》第一次修正\u3000"
+    "2001年4月28日第九届全国人民代表大会常务委员会第二十一次会议修订\u3000"
+    "根据2013年6月29日第十二届全国人民代表大会常务委员会第三次会议"
+    "《关于修改〈中华人民共和国文物保护法〉等十二部法律的决定》第二次修正\u3000"
+    "根据2015年4月24日第十二届全国人民代表大会常务委员会第十四次会议"
+    "《关于修改〈中华人民共和国港口法〉等七部法律的决定》第三次修正）")
+_RULES_CAPTION = (
+    "(2002年9月7日中华人民共和国国务院令第362号公布\u3000"
+    "根据2012年11月9日《国务院关于修改和废止部分行政法规的决定》第一次修订\u3000"
+    "根据2013年7月18日《国务院关于废止和修改部分行政法规的决定》第二次修订\u3000"
+    "根据2016年2月6日《国务院关于修改部分行政法规的决定》第三次修订)")
+_RULES_EFFECTIVE = ("第一百一十三条\u3000本细则自2002年10月15日起施行。"
+                    "1993年8月4日国务院发布的《中华人民共和国税收征收管理法实施细则》同时废止。")
+
+
+class TestNpcDateLineage(unittest.TestCase):
+    """题注与末条施行句要能被读出来，并且不许把版本沿革判成元数据错。"""
+
+    def _body(self, title, caption, effective):
+        ps = [title]
+        if caption:
+            ps.append(caption)
+        ps += ["第一章\u3000总\u3000\u3000则", "第一条\u3000为了测试，制定本法。"]
+        if effective:
+            ps.append(effective)
+        return ps
+
+    def _carbon(self, **kw):
+        return DT.law_date_lineage(
+            self._body("碳排放权交易管理暂行条例", _CARBON_CAPTION, _CARBON_EFFECTIVE),
+            **kw)
+
+    def test_carbon_original_publish_date_comes_from_the_caption(self):
+        got = self._carbon(publish_date="2026-08-08", effective_date="2026-08-15")
+        self.assertEqual("2024-01-25", got["original_publish_date"])
+        self.assertEqual(_CARBON_CAPTION, got["caption"])
+
+    def test_carbon_amendment_is_read_with_its_date_and_document(self):
+        got = self._carbon(publish_date="2026-08-08", effective_date="2026-08-15")
+        self.assertEqual([{"date": "2026-08-08", "kind": "修订",
+                           "document": "国务院关于修改和废止部分行政法规的决定"}],
+                         got["amendments"])
+
+    def test_carbon_effective_clause_date_is_the_original_one(self):
+        got = self._carbon(publish_date="2026-08-08", effective_date="2026-08-15")
+        self.assertEqual("2024-05-01", got["effective_clause_date"])
+        self.assertEqual(_CARBON_EFFECTIVE, got["effective_clause"])
+
+    def test_amended_law_is_not_reported_as_a_metadata_conflict(self):
+        """录入项 2026-08-08 与正文 2024-05-01 都对，指的是不同版次。"""
+        note = self._carbon(publish_date="2026-08-08",
+                            effective_date="2026-08-15")["date_note"]
+        self.assertIn("2026-08-08", note)
+        self.assertIn("2024-05-01", note)
+        self.assertIn("不是同一次", note)
+        self.assertNotIn("不一致", note)
+
+    def test_explained_version_split_does_not_also_ask_to_verify_it(self):
+        """题注已经把差异解释清楚了，就不该再追加一句"核对是否指同一次施行"。"""
+        note = self._carbon(publish_date="2026-08-08",
+                            effective_date="2026-08-15")["date_note"]
+        self.assertNotIn("是否指同一次施行", note)
+
+    def test_all_five_amendments_of_the_collection_law_are_read_in_order(self):
+        got = DT.law_date_lineage(
+            self._body("中华人民共和国税收征收管理法", _COLLECTION_CAPTION,
+                       "第九十四条\u3000本法自2001年5月1日起施行。"),
+            publish_date="2015-04-24", effective_date="2015-04-24")
+        self.assertEqual("1992-09-04", got["original_publish_date"])
+        self.assertEqual(["1995-02-28", "2001-04-28", "2013-06-29", "2015-04-24"],
+                         [a["date"] for a in got["amendments"]])
+        self.assertEqual(["修正", "修订", "修正", "修正"],
+                         [a["kind"] for a in got["amendments"]])
+        self.assertEqual("", got["amendments"][1]["document"],
+                         "2001 年那次修订题注里没写文件名，不许从别处补一个")
+
+    def test_latest_amendment_not_the_first_is_the_one_compared(self):
+        note = DT.law_date_lineage(
+            self._body("中华人民共和国税收征收管理法", _COLLECTION_CAPTION,
+                       "第九十四条\u3000本法自2001年5月1日起施行。"),
+            publish_date="2015-04-24", effective_date="2015-04-24")["date_note"]
+        self.assertIn("2015-04-24", note)
+        self.assertIn("2001-05-01", note)
+        self.assertNotIn("不一致", note)
+
+    def test_ascii_parentheses_and_ordinal_amendments_are_accepted(self):
+        got = DT.law_date_lineage(
+            self._body("中华人民共和国税收征收管理法实施细则", _RULES_CAPTION,
+                       _RULES_EFFECTIVE),
+            publish_date="2016-02-06", effective_date="")
+        self.assertEqual("2002-09-07", got["original_publish_date"])
+        self.assertEqual(["2012-11-09", "2013-07-18", "2016-02-06"],
+                         [a["date"] for a in got["amendments"]])
+        self.assertEqual("2002-10-15", got["effective_clause_date"])
+
+    def test_body_supplies_the_effective_date_the_record_left_blank(self):
+        note = DT.law_date_lineage(
+            self._body("中华人民共和国税收征收管理法实施细则", _RULES_CAPTION,
+                       _RULES_EFFECTIVE),
+            publish_date="2016-02-06", effective_date="")["date_note"]
+        self.assertIn("2002-10-15", note)
+        self.assertIn("录入项未录", note)
+
+    def test_missing_caption_is_declared_not_guessed(self):
+        got = DT.law_date_lineage(
+            self._body("中华人民共和国增值税法实施条例", "",
+                       "第五十四条\u3000本条例自2026年1月1日起施行。"),
+            publish_date="2025-12-25", effective_date="2026-01-01")
+        self.assertEqual("", got["caption"])
+        self.assertEqual([], got["amendments"])
+        self.assertIn("未附题注", got["date_note"])
+        self.assertNotIn("不一致", got["date_note"])
+
+    def test_matching_dates_without_amendment_produce_no_conflict_claim(self):
+        note = DT.law_date_lineage(
+            self._body("中华人民共和国增值税法", _VAT_CAPTION, _VAT_EFFECTIVE),
+            publish_date="2024-12-25", effective_date="2026-01-01")["date_note"]
+        self.assertNotIn("不是同一次", note)
+        self.assertNotIn("不一致", note)
+
+    def test_repealed_law_date_in_the_same_clause_is_not_the_effective_date(self):
+        got = DT.law_date_lineage(
+            self._body("中华人民共和国增值税法", _VAT_CAPTION, _VAT_EFFECTIVE),
+            publish_date="2024-12-25", effective_date="2026-01-01")
+        self.assertEqual("2026-01-01", got["effective_clause_date"])
+
+    def test_differing_effective_dates_without_amendment_ask_for_a_check(self):
+        got = DT.law_date_lineage(
+            self._body("某法", _VAT_CAPTION, "第三十八条\u3000本法自2025年1月1日起施行。"),
+            publish_date="2024-12-25", effective_date="2026-01-01")
+        self.assertIn("核对", got["date_note"])
+        self.assertIn("2025-01-01", got["date_note"])
+        self.assertIn("2026-01-01", got["date_note"])
+
+    def test_unreadable_body_says_so_instead_of_claiming_no_caption(self):
+        got = DT.law_date_lineage([], publish_date="2026-08-08",
+                                  effective_date="2026-08-15")
+        self.assertEqual("", got["caption"])
+        self.assertEqual("", got["effective_clause_date"])
+        self.assertIn("没取到", got["date_note"])
+        self.assertNotIn("未附题注", got["date_note"])
+
+
+class TestNpcPreviewOneRound(unittest.TestCase):
+    """--preview 已经下过正文，日期沿革就该在这一趟里带出来。"""
+
+    def setUp(self):
+        self.detail = {"id": "x", "title": "碳排放权交易管理暂行条例",
+                       "category": "行政法规", "status": "现行有效",
+                       "issuing_authority": "国务院",
+                       "publish_date": "2026-08-08", "effective_date": "2026-08-15",
+                       "content_tree": [], "_from_cache": False}
+        self.paras = ["碳排放权交易管理暂行条例", _CARBON_CAPTION,
+                      "第一条\u3000为了规范碳排放权交易，制定本条例。",
+                      "第二条\u3000本条例适用于全国碳排放权交易市场。",
+                      _CARBON_EFFECTIVE]
+        self.downloads = []
+
+        def _bytes(bbbs_id, fmt="docx"):
+            self.downloads.append((bbbs_id, fmt))
+            return b"stub"
+
+        for name, val in (("fetch_detail", lambda bid: dict(self.detail)),
+                          ("download_bytes", _bytes),
+                          ("_parse_docx_from_bytes", lambda b: list(self.paras)),
+                          ("download_file", mock.Mock(
+                              side_effect=AssertionError("preview 不该再落盘一遍")))):
+            patcher = mock.patch.object(DT, name, val)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_preview_downloads_exactly_once_and_never_writes_a_file(self):
+        DT.preview_law("x")
+        self.assertEqual([("x", "docx")], self.downloads)
+
+    def test_preview_carries_the_date_lineage(self):
+        got = DT.preview_law("x")
+        lin = got["date_lineage"]
+        self.assertEqual("2024-01-25", lin["original_publish_date"])
+        self.assertEqual("2024-05-01", lin["effective_clause_date"])
+        self.assertEqual("2026-08-08", lin["amendments"][-1]["date"])
+        self.assertIn("不是同一次", got["date_note"])
+
+    def test_article_count_and_numbering_are_unchanged(self):
+        got = DT.preview_law("x")
+        self.assertEqual(3, got["article_count"])
+        self.assertEqual("chinese", got["numbering_pattern"])
+        self.assertEqual(3, len(got["first_articles"]))
+
+    def test_download_failure_is_reported_not_disguised_as_a_missing_caption(self):
+        with mock.patch.object(DT, "download_bytes",
+                               side_effect=RuntimeError("HTTP 429")):
+            got = DT.preview_law("x")
+        self.assertEqual(0, got["article_count"])
+        self.assertEqual("", got["date_lineage"]["caption"])
+        self.assertIn("HTTP 429", got["date_note"])
+        self.assertNotIn("未附题注", got["date_note"])
+
+    def test_cli_preview_prints_the_lineage_and_the_note(self):
+        buf = io.StringIO()
+        with mock.patch.object(sys, "argv", ["tax_detail.py", "--preview", "x"]):
+            with contextlib.redirect_stdout(buf):
+                DT.main()
+        out = buf.getvalue()
+        self.assertIn("2024-05-01", out)
+        self.assertIn("2026-08-08", out)
+        self.assertIn("不是同一次", out)
+
+    def test_cli_info_points_at_preview_for_the_body_lineage(self):
+        buf = io.StringIO()
+        with mock.patch.object(sys, "argv", ["tax_detail.py", "--info", "x"]):
+            with contextlib.redirect_stdout(buf):
+                DT.main()
+        self.assertIn("--preview", buf.getvalue())
+
+
 # ── 用例自身的能力自检：规则不能永远绿 ─────────────────────────────────────
 class TestRulesCanActuallyFail(unittest.TestCase):
     """把规则作用在构造的反例上，确认它真的拦得住。"""

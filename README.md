@@ -11,7 +11,7 @@ gh skill install kuailexiaozixin/tax-analysis-skill
 锁定版本：
 
 ```bash
-gh skill install kuailexiaozixin/tax-analysis-skill tax-analysis-skill --pin v3.62.1
+gh skill install kuailexiaozixin/tax-analysis-skill tax-analysis-skill --pin v3.62.2
 ```
 
 ## 结构

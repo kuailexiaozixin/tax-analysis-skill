@@ -829,12 +829,14 @@ class TestInterpretationsRoute(_RouteCase):
 
 
 class TestWebRelatedRoute(_RouteCase):
-    def _patches(self, practice, web, web_error=""):
+    def _patches(self, practice, web, web_error="", practice_error=""):
+        # practice 交回二元组 (条目, 说明)：与被测函数自己的返回形一致，
+        # 桩形与被测形不一致时这一路在测试里永远绿（见下面的 _web_only）。
         return (
             mock.patch.object(tax_server, "fetch_detail",
                               return_value={"title": "中华人民共和国增值税法"}),
             mock.patch.object(tax_server, "_search_practice_sources",
-                              return_value=practice),
+                              return_value=(practice, practice_error)),
             mock.patch.object(tax_server, "_search_web_broad",
                               return_value=(web, web_error)),
         )
@@ -863,6 +865,82 @@ class TestWebRelatedRoute(_RouteCase):
         self.assertEqual(0, body["total"])
         self.assertEqual("360 被拦截", body["engine_error"])
 
+    # ── 实务那一路：桩打在取数源头，让真的 search_practice_sources 跑一遍 ──
+    #
+    # 上面几条把 `_search_practice_sources` 整个打桩，测的是路由接不接得住；
+    # 缺陷恰恰在它内部——两源各自的 `_error` 被丢掉、`collect_related` 只挂
+    # 全网那一枚。所以这一组只 patch 最里层的 `search_shui5` / `search_wechat`，
+    # 让组合与判据都按真实代码走（桩形与被测返回形不一致会让这一路永远绿，
+    # 见 `test_broad_web_survives_to_the_payload` 记的那次错位）。
+
+    def _practice_only(self, shui5, wechat, web_n=2):
+        found = {"results": [{"title": "政策解读文章标题足够长第%d篇" % i,
+                              "url": "https://x.test/%d.html" % i} for i in range(web_n)]}
+        return (
+            mock.patch.object(tax_server, "fetch_detail",
+                              return_value={"title": "中华人民共和国增值税法"}),
+            mock.patch.object(tax_server.tax_related, "search_shui5",
+                              lambda query, size=3: shui5),
+            mock.patch.object(tax_server.tax_related, "search_wechat",
+                              lambda query, size=3: wechat),
+            mock.patch.object(tax_server.tax_related, "sogou_search",
+                              lambda query, site="", size=10: found),
+        )
+
+    def test_practice_channels_blocked_are_named(self):
+        """实务两源都被拦、全网正常：必须说明是谁没取到，不得静默交回"只剩全网"。
+
+        改前的实测形状：`total` 只剩全网那两条且 `engine_error` 根本没有，
+        界面读成"确实没有实务解读"（红线⑦：把没取到说成没有）。
+        """
+        p1, p2, p3, p4 = self._practice_only(
+            {"results": [], "total": 0, "_error": "搜狗与站内两路都没走成"},
+            {"results": [], "total": 0, "_error": "返回的页面既没有结果块也没有无结果提示"})
+        with p1, p2, p3, p4:
+            body = self.client.get("/api/web-related/abc123").get_json()
+        err = body.get("engine_error", "")
+        self.assertIn("税屋", err)
+        self.assertIn("微信公众号", err)
+        self.assertEqual(2, body["total"], "全网那两条照常返回")
+
+    def test_practice_and_web_blocked_surface_both_notes(self):
+        """两路各说各的：说明并成一格，谁都不许吃掉谁。"""
+        p1, p2, p3, p4 = self._practice_only(
+            {"results": [], "_error": "税屋被 WAF 拦"},
+            {"results": [], "_error": "公众号被拦"},
+            web_n=0)
+        with p1, p2, p3, p4:
+            body = self.client.get("/api/web-related/abc123").get_json()
+        err = body.get("engine_error", "")
+        self.assertIn("税屋被 WAF 拦", err)
+        self.assertIn("公众号被拦", err)
+
+    def test_genuine_zero_practice_is_not_called_a_block(self):
+        """两源都成功返回空（没有 _error）：这是"确实没有"，不许写进 engine_error。
+
+        反向的错同样要避免：把没有的东西报成取数失败。
+        """
+        p1, p2, p3, p4 = self._practice_only({"results": [], "total": 0},
+                                              {"results": [], "total": 0})
+        with p1, p2, p3, p4:
+            body = self.client.get("/api/web-related/abc123").get_json()
+        self.assertNotIn("engine_error", body)
+        self.assertEqual(2, body["total"])
+
+    def test_practice_items_still_reach_the_payload(self):
+        """控制组：两源都取到条目时逐条进 sources，说明为空。"""
+        p1, p2, p3, p4 = self._practice_only(
+            {"results": [{"title": "税屋的实务解读", "url": "https://www.shui5.cn/a/1.html"}],
+             "total": 1},
+            {"results": [{"title": "公众号的实务解读", "url": "https://mp.weixin.qq.com/s/1"}],
+             "total": 1})
+        with p1, p2, p3, p4:
+            body = self.client.get("/api/web-related/abc123").get_json()
+        self.assertNotIn("engine_error", body)
+        self.assertEqual({"https://www.shui5.cn/a/1.html", "https://mp.weixin.qq.com/s/1",
+                          "https://x.test/0.html", "https://x.test/1.html"},
+                         {s["url"] for s in body["sources"]})
+
     def test_drops_items_without_url(self):
         p1, p2, p3 = self._patches([{"title": "没有链接"}],
                                    [{"url": "https://b.test/2", "title": "B"}])
@@ -878,7 +956,11 @@ class TestWebRelatedRoute(_RouteCase):
     # ── 打桩在引擎入口的那两条：桩形不能由被测函数自己决定 ──
 
     def _web_only(self, n):
-        """让全网这一路真的经过 _search_web_broad，只在 sogou_search 处打桩。"""
+        """让全网这一路真的经过 _search_web_broad，只在 sogou_search 处打桩。
+
+        实务那一枚桩必须是二元组 `([], "")`：给它裸列表时解包会抛 ValueError、
+        被 except 吞掉走"这一路挂了"的分支——测试照样绿，但钉不住契约。
+        """
         found = {"results": [{"title": "企业重组所得税处理的实务解读第%d篇" % i,
                               "url": "https://shui5.cn/a/%d.html" % i,
                               "snippet": "摘要"} for i in range(n)]}
@@ -886,7 +968,7 @@ class TestWebRelatedRoute(_RouteCase):
             mock.patch.object(tax_server.tax_related, "sogou_search",
                               lambda query, site="", size=10: found),
             mock.patch.object(tax_server, "fetch_detail", return_value={"title": "增值税法"}),
-            mock.patch.object(tax_server, "_search_practice_sources", return_value=[]),
+            mock.patch.object(tax_server, "_search_practice_sources", return_value=([], "")),
         )
 
     def test_broad_web_survives_to_the_payload(self):
@@ -924,7 +1006,7 @@ class TestWebRelatedRoute(_RouteCase):
 
         def fake_practice(query, n):
             calls["practice"] = (query, n)
-            return [{"url": "https://a.test/1", "title": "解读A"}]
+            return [{"url": "https://a.test/1", "title": "解读A"}], ""
 
         def fake_web(query, n):
             calls["web"] = (query, n)

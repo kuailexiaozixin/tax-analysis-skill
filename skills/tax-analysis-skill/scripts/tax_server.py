@@ -376,9 +376,16 @@ def _source_label(site: str) -> str:
     return site
 
 
-def _search_practice_sources(query: str, n: int = 3) -> list[dict]:
-    """税屋与公众号的实务解读；实现与三个适配器共用 tax_related 那一份。"""
-    return tax_related.search_practice_sources(query, n)
+def _search_practice_sources(query: str, n: int = 3) -> tuple[list, str]:
+    """税屋与公众号的实务解读；实现与三个适配器共用 tax_related 那一份。
+
+    交回 (条目, 取数说明) 二元组，与 `collect_related` 的注入点形状一致——
+    这一路被拦时说明要能走到 `engine_error`，否则 total=0 会被读成"没有实务解读"。
+    直接 `return tax_related.search_practice_sources(...)` 会漏掉这一层自己的
+    注解（门禁的 tuple 契约用例只看函数体里直接写出的 return 形状），所以解一层。
+    """
+    items, note = tax_related.search_practice_sources(query, n)
+    return items, note
 
 
 def search_interpretations(law_title: str, keyword: str = "",

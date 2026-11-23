@@ -836,6 +836,49 @@ class TestNpcSharedBusinessGuard(unittest.TestCase):
         finally:
             DT._request = old
 
+    # ---- 加宽那一轮也必须判：同一个端点的第二次请求 ----
+
+    def _two_round_search(self, first_payload, second_payload):
+        """按调用次序发两份信封：第 1 次是主检索，第 2 次是 title 精确路径的加宽过取。
+
+        加宽轮只在 `search_type=2 and scope=='title' and page==1` 且 fetch_size != size
+        时发出（`tax_search.py:866`），所以 size 必须小于 max(size*3, 20) 才会走到。
+        """
+        seq = {"n": 0}
+
+        def fake(method, url, **kw):
+            seq["n"] += 1
+            return _NpcEnvelopeResp(first_payload if seq["n"] == 1 else second_payload)
+
+        old = T._request
+        try:
+            T._request = fake
+            r = T.search_tax("增值税", scope="title", search_type=2, size=2, page=1)
+            return r, seq["n"]
+        finally:
+            T._request = old
+
+    def test_wide_round_healthy_still_widens(self):
+        """控制组：两轮都健康时加宽照常生效，不得因为新加的判据而误拦。"""
+        r, calls = self._two_round_search(
+            '{"total":45,"rows":[{"bbbs":"A1","flfgname":"中华人民共和国增值税法","sxx":3,"score":9},'
+            '{"bbbs":"A2","flfgname":"增值税暂行条例","sxx":3,"score":8}],'
+            '"code":200,"msg":"查询成功"}',
+            '{"total":60,"rows":[{"bbbs":"A1","flfgname":"中华人民共和国增值税法","sxx":3,"score":9},'
+            '{"bbbs":"B9","flfgname":"关税税则委员会公告","sxx":3,"score":1}],'
+            '"code":200,"msg":"查询成功"}')
+        self.assertEqual(2, calls, "加宽轮没发出去，测的就不是这条路径")
+        self.assertTrue(any(x["id"] == "A1" for x in r["results"]))
+
+    def test_wide_round_business_error_raises_not_silently_skipped(self):
+        """加宽轮出错绝不能被读成"没有更多候选"：那会让标题排序照旧偏、且无痕迹。"""
+        with self.assertRaises(RuntimeError) as cm:
+            self._two_round_search(
+                '{"total":45,"rows":[{"bbbs":"A1","flfgname":"中华人民共和国增值税法","sxx":3,"score":9}],'
+                '"code":200,"msg":"查询成功"}',
+                '{"msg":"系统异常","code":500}')
+        self.assertIn("业务失败", str(cm.exception))
+
 
 
 # ── ① NPC 闸要包住下载路径 ────────────────────────────────────────────────

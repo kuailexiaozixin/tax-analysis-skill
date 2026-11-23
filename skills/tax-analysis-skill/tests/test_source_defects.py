@@ -636,6 +636,86 @@ class TestWechatCaptchaGate(unittest.TestCase):
         self.assertNotIn("appmsgcaptcha", calls["url"])
 
 
+class _NpcResp:
+    """够用的 NPC 响应替身：HTTP 永远 200，业务状态只活在 JSON 里。"""
+
+    def __init__(self, payload):
+        self.status_code = 200
+        self.headers = {"Content-Type": "application/json"}
+        self.content = payload.encode("utf-8")
+        self.text = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        import json as _json
+        return _json.loads(self.text)
+
+
+class TestNpcAppErrorIsNotZeroHits(unittest.TestCase):
+    """NPC 出错时回 HTTP 200 + {"msg":"系统异常","code":500}，不能读成"0 条命中"。
+
+    2026-11-23 实测的正常信封是 {"total":36,"rows":[…],"code":200,"msg":"查询成功"}
+    ——**健康响应自己也带 code/msg**，所以判据只能是"code 存在且不是 200"，
+    不能是"带 code 就算错"，否则会把每一次正常检索都拦掉。
+    """
+
+    def _search_with(self, payload):
+        import tax_search as TS
+        old = TS._request
+        try:
+            TS._request = lambda method, url, **kw: _NpcResp(payload)
+            return TS.search_tax("增值税", scope="title", search_type=2, size=5)
+        finally:
+            TS._request = old
+
+    def test_business_error_raises_instead_of_empty_result(self):
+        for payload, why in (
+            ('{"msg":"系统异常","code":500}', "载荷字段名错"),
+            ('{"msg":"Request method \'GET\' not supported","code":500}', "方法不对"),
+            ('{"msg":"Content type \'x\' not supported","code":500}', "Content-Type 不对"),
+        ):
+            with self.subTest(why):
+                try:
+                    r = self._search_with(payload)
+                except RuntimeError as e:
+                    self.assertIn("业务失败", str(e), why)
+                    self.assertIn("没有命中", str(e),
+                                  "报错要明说这不是空结果，免得下游当空答：%s" % why)
+                    continue
+                self.fail("应用层错误被静默读成结果了（%s）：%r" % (why, r.get("total")))
+
+    def test_healthy_envelope_still_passes(self):
+        """控制组：真实信封带 code=200，守卫必须放行——这条防止判据写反。"""
+        r = self._search_with(
+            '{"total":36,"code":200,"msg":"查询成功",'
+            '"rows":[{"bbbs":"x1","flfgname":"中华人民共和国增值税法","sxx":3}]}')
+        self.assertEqual(36, r["total"])
+        self.assertEqual(1, len(r["results"]))
+
+    def test_string_code_200_does_not_false_alarm(self):
+        """code 若是 "200" 字符串形态，归一化后仍算成功，不许发假警。"""
+        r = self._search_with('{"total":12,"code":"200","msg":"查询成功","rows":[]}')
+        self.assertEqual(12, r["total"])
+
+    def test_legacy_envelope_without_code_key_passes(self):
+        """老式信封没有 code 键：照旧放行，不误伤。"""
+        r = self._search_with('{"total":7,"rows":[]}')
+        self.assertEqual(7, r["total"])
+
+    def test_code_zero_is_not_treated_as_success(self):
+        """0 是 falsy：用 is not None 判，不能写成 if code and code != 200。"""
+        with self.assertRaises(RuntimeError):
+            self._search_with('{"total":9,"code":0,"msg":"x"}')
+
+    def test_genuine_zero_hits_stays_a_normal_answer(self):
+        """真 0 条（code=200 + total=0）绝不能报错——否则"查无此法"会被说成接口坏了。"""
+        r = self._search_with('{"total":0,"rows":[],"code":200,"msg":"查询成功"}')
+        self.assertEqual(0, r["total"])
+        self.assertEqual([], r["results"])
+
+
 
 # ── ① NPC 闸要包住下载路径 ────────────────────────────────────────────────
 class TestNpcGateCoversDownload(unittest.TestCase):

@@ -2620,6 +2620,55 @@ class TestShui5ScopedSearch(unittest.TestCase):
         self.assertIn("翻到上限 1 页只取了 30 条", r["_status"],
                       "撞到上限时必须写明只取了多少，不能报成取全了")
 
+    # ---- 中途空页：断供不是尽头 ----
+
+    def test_mid_crawl_empty_page_is_flagged_as_dropout(self):
+        """站点报 61 条、只收到 60 条就遇到空页 ⇒ 判为断供，且不许借用"翻到上限"那句。"""
+        total = 61
+        gets = {SH.SEARCH_RESULT + "?page=1&searchid=999": _list_page(31, 30, total),
+                SH.SEARCH_RESULT + "?page=2&searchid=999": _list_page(61, 0, total)}
+        s = self._Form(_list_page(1, 30, total), self.LANDING, gets)
+        r = SH.search_native("增值税", size=5, session=s, gap=0, fetch_all=True)
+        self.assertEqual(60, len(r["results"]))
+        self.assertIn("断供", r["_status"], r["_status"])
+        self.assertIn("不是这一词的完整集合", r["_status"])
+        self.assertNotIn("翻到上限", r["_status"],
+                         "这一轮只读了 2 页，cap 还有 3 页没用完——报成上限是替站点圆场")
+        self.assertEqual(r["_error"], r["_status"].split("；", 1)[1].rstrip("）"),
+                         "断供话术要原样进 _error，聚合层只认 _error")
+
+    def test_honest_end_of_list_is_not_flagged_as_dropout(self):
+        """控制组：站点吐满 31 条后循环自己收口，一条都不许报成断供。"""
+        total = 31
+        gets = {SH.SEARCH_RESULT + "?page=1&searchid=999": _list_page(31, 1, total)}
+        s = self._Form(_list_page(1, 30, total), self.LANDING, gets)
+        r = SH.search_native("增值税", size=5, session=s, gap=0, fetch_all=True)
+        self.assertEqual(31, len(r["results"]))
+        self.assertNotIn("断供", r["_status"], r["_status"])
+        self.assertNotIn("_error", r, "正常取全不该有 _error")
+
+    def test_cap_at_max_pages_is_still_the_cap_message(self):
+        """控制组：真撞到 SEARCH_ALL_MAX_PAGES 时话术仍是"翻到上限"，不与断供混成一团。"""
+        total = 61
+        gets = {SH.SEARCH_RESULT + "?page=1&searchid=999": _list_page(31, 30, total)}
+        s = self._Form(_list_page(1, 30, total), self.LANDING, gets)
+        with mock.patch.object(SH, "SEARCH_ALL_MAX_PAGES", 1):
+            r = SH.search_native("增值税", size=5, session=s, gap=0, fetch_all=True)
+        self.assertIn("翻到上限 1 页", r["_status"])
+        self.assertNotIn("断供", r["_status"])
+        self.assertNotIn("_error", r)
+
+    def test_wrapper_passes_native_dropout_through_to_error(self):
+        """包装层要接住站内的断供：半截清单 results 非空，旧写法只在"两路都空"才写 _error。"""
+        nat = {"results": [SH._row_dict("标题1", P1, "2026-08-10", "摘要")],
+               "total": 900,
+               "_status": "命中 1 条（这一词站内共 1000 条；第 2 页返回空，判为断供）",
+               "_error": "第 2 页返回空，但站点报这一词共 1000 条、只收了 30 条：判为断供"}
+        r, calls = self._route({"results": [], "total": 0}, nat, channel="native")
+        self.assertEqual(["站内"], calls)
+        self.assertEqual(nat["_error"], r["_error"],
+                         "断供不接出去，上层就只看到 total=1 像是这一词只有 1 条")
+
     def _route(self, sogou, native, **kw):
         calls = []
 

@@ -98,8 +98,9 @@ class TestLocateIntegration(unittest.TestCase):
         dn = TT.doc_number_of(title)
         self.assertTrue(dn, "用例标题应能被 doc_number_of 归出文号")
 
-        rows1, _ = AN.locate_cited_document(title)
+        rows1, _, state1 = AN.locate_cited_document(title)
         self.assertTrue(rows1 and rows1[0].get("_cited_identity") == "same", rows1)
+        self.assertEqual("", state1, "检索取成时不该报任何档位")
         self.assertFalse(rows1[0].get("_from_cache"))
         first_call_count = len(self.calls)
         self.assertGreater(first_call_count, 0, "冷启动却没打检索")
@@ -107,7 +108,8 @@ class TestLocateIntegration(unittest.TestCase):
         # 现在缓存里应有这枚文号 → 官方链接
         self.assertEqual(OFFICIAL, CITED.get_cited_link(dn, AN.CITED_CACHE_PATH))
 
-        rows2, tried2 = AN.locate_cited_document(title)
+        rows2, tried2, state2 = AN.locate_cited_document(title)
+        self.assertEqual("", state2, "缓存命中档应交回空状态")
         self.assertEqual(len(self.calls), first_call_count, "命中缓存仍打了检索")
         self.assertTrue(rows2[0]["_from_cache"])
         self.assertEqual(OFFICIAL, rows2[0]["url"])
@@ -122,7 +124,7 @@ class TestLocateIntegration(unittest.TestCase):
                                  "document_number": "财税〔2012〕75号"}]}
         AN.FGK.search_fgk = stub
         title = self._title()
-        rows, _ = AN.locate_cited_document(title)
+        rows, _, _state = AN.locate_cited_document(title)
         self.assertTrue(rows)   # 定位本身不受域名影响
         dn = TT.doc_number_of(title)
         self.assertEqual("", CITED.get_cited_link(dn, AN.CITED_CACHE_PATH),

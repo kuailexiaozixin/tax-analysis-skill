@@ -126,19 +126,115 @@ def test_locate_cited_document_needs_an_identity_match():
 
     try:
         stub(FGK_SIX_FOR_ZGL)
-        rows, tried = AN.locate_cited_document("税收征管法")
+        rows, tried, state = AN.locate_cited_document("税收征管法")
         assert tried and rows, (tried, rows)
+        assert state == "", state          # 取成了，只是没一份是目标
         assert all(not r.get("_cited_identity") for r in rows), \
             [r.get("_cited_identity") for r in rows]
 
         # 真目标混在这一堆里时必须排到第一，哪怕别人的字面命中率一样高
         stub([FGK_SIX_FOR_ZGL[0], "中华人民共和国税收征收管理法"])
-        rows, _ = AN.locate_cited_document("税收征管法")
+        rows, _, state = AN.locate_cited_document("税收征管法")
+        assert state == "", state
         assert rows[0]["title"] == "中华人民共和国税收征收管理法", rows[0]
         assert rows[0]["_cited_identity"] == "abbrev", rows[0]
     finally:
         AN.FGK.search_fgk = real
     print("  [PASS] locate_cited_document：无同一性证据就不打点名标记")
+
+
+def _stub_by_word(table, default=None):
+    """按候选词返回预制信封；没列出的词走 default。记下发过哪些词。"""
+    seen = []
+
+    def stub(keyword, size=6, **kw):
+        seen.append(keyword)
+        if keyword in table:
+            return table[keyword]
+        return default if default is not None else {"results": [], "_empty_reason":
+                                                    "0 条：这一词在站内没有命中"}
+    stub.seen = seen
+    return stub
+
+
+def test_cited_locate_separates_channel_failure_from_no_hit():
+    """零召回必须分得清"没连上"与"库里没有"——两句结论对读者完全不同。
+
+    实测（2026-11-24，六档全过）：改之前 `search_fgk` 抛异常被 `except Exception:
+    continue` 无痕吞掉，交回 _error 时循环又从不读那两枚键，于是 HTTP 500 那一轮
+    与诚实 0 命中那一轮，compose 给出的 cited_note 逐字相同，而且那句「召回的标题
+    都只是在字面上含住这几个字」在一条都没召回时是关于站点的假陈述。
+    """
+    real = AN.FGK.search_fgk
+    want = "税收征管法"
+
+    def composed(state, rows):
+        plan = AN.build_plan("请解读《税收征管法》修订草案")
+        plan["terms"] = dict(plan.get("terms") or {}, cited=[{"title": want}])
+        plan["rounds"] = []
+        plan["cited_located"] = bool(rows) and bool(rows[0].get("_cited_identity"))
+        plan["cited_state"] = state
+        plan["evidence"] = E.grade_all(rows)
+        return AN.compose(plan)
+
+    try:
+        # 每一次检索都失败（交回 _error，不抛异常）→ channel-failed
+        AN.FGK.search_fgk = _stub_by_word(
+            {}, default={"results": [], "_error": "search5 检索失败：HTTP 500",
+                         "_fetch_failed": True})
+        rows, tried, state = AN.locate_cited_document(want)
+        assert not rows and tried, (rows, tried)
+        assert state.startswith("channel-failed"), state
+        assert "HTTP 500" in state, state
+        note = composed(state, rows)["cited_note"]
+        assert "检索通道没取成" in note and "不是库里没有" in note, note
+        assert "字面上含住" not in note, note      # 零召回时这句是假陈述
+
+        # 每一次都成功、站点诚实回 0 条 → no-hit，且不许报成通道故障
+        AN.FGK.search_fgk = _stub_by_word({})
+        rows, tried, state = AN.locate_cited_document(want)
+        assert not rows and tried, (rows, tried)
+        assert state.startswith("no-hit"), state
+        note = composed(state, rows)["cited_note"]
+        assert "逐枚试检都是 0 条" in note, note
+        assert "检索通道没取成" not in note, note
+
+        # 候选词直接抛异常 → 同样记成 channel-failed，不再无痕丢弃
+        def boom(keyword, size=6, **kw):
+            raise TimeoutError("goto timeout")
+        AN.FGK.search_fgk = boom
+        rows, tried, state = AN.locate_cited_document(want)
+        assert not rows and tried, (rows, tried)
+        assert state.startswith("channel-failed"), state
+        assert "TimeoutError" in state, state
+
+        # 有失败也有取成的（取到的不是目标）→ partial：旧那句仍为真，但要补
+        # "这一轮不完整"，否则目标可能落在没取成的那枚底下却无人知晓
+        n = {"i": 0}
+
+        def flaky(keyword, size=6, **kw):
+            n["i"] += 1
+            if n["i"] == 1:
+                return {"results": [], "_error": "search5 检索失败：HTTP 500",
+                        "_fetch_failed": True}
+            return {"results": [{"title": FGK_SIX_FOR_ZGL[0], "url": "u110"}]}
+        AN.FGK.search_fgk = flaky
+        rows, tried, state = AN.locate_cited_document(want)
+        assert rows, rows
+        assert state.startswith("partial"), state
+        note = composed(state, rows)["cited_note"]
+        assert "字面上含住" in note and "没取成" in note, note
+
+        # 控制组：全都取成且第一条就是目标 → 空状态、无 note
+        AN.FGK.search_fgk = _stub_by_word(
+            {want: {"results": [{"title": "中华人民共和国税收征收管理法",
+                                 "url": "u-law"}]}})
+        rows, tried, state = AN.locate_cited_document(want)
+        assert state == "", state
+        assert composed(state, rows)["cited_note"] == "", "定位成功不该有提醒"
+    finally:
+        AN.FGK.search_fgk = real
+    print("  [PASS] 点名定位四档互斥：channel-failed / no-hit / partial / 取成")
 
 
 def test_unlocated_cited_document_falls_back_with_a_note():

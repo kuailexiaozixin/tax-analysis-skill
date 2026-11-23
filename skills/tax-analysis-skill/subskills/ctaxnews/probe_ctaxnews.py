@@ -561,7 +561,7 @@ def item10(session, kw):
           "91 次 + 父栏目页各一次 10 次；探测那一路受 max_nodes=120 封住、取页那一路不另封，"
           "所以换一轮建站点的父栏目数就换实发；--fast 跳过）")
     before = len(C.load_columns())
-    cols = C.update_columns(session=session, max_nodes=120)
+    cols, incomplete = C.update_columns(session=session, max_nodes=120)
     parents = sum(1 for c in cols if c.get("parent"))
     dup = {}
     for c in cols:
@@ -569,6 +569,7 @@ def item10(session, kw):
     dup = {k: v for k, v in dup.items() if v > 1}
     _line("表内行数（重建前 / 重建后）", "%d / %d，其中父栏目 %d"
           % (before, len(cols), parents))
+    _line("这一轮没收全的说明（非空即不能当成全站数）", incomplete or "无")
     _line("重名栏目", "、".join("%s×%d" % (k, v) for k, v in sorted(dup.items())) or "无")
     _line("column_lookup 对重名的判据", "%s"
           % " ".join("%s:%s" % (k, C.column_lookup(k)[0]) for k in sorted(dup)))

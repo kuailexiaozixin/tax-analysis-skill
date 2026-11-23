@@ -3849,6 +3849,135 @@ class TestCtaxColumnPageRows(unittest.TestCase):
             self.assertIn("一页也不要", r["_status"])
 
 
+class TestCtaxParentColumnExpansion(unittest.TestCase):
+    """栏目表重建时，父栏目那一页取不到会静默丢掉整批孙辈，三个自洽计数与落盘行数都看不见。
+
+    判据前提（2026-11-24 真站实测，见 references/source_defects.md 那一行）：
+      健康父栏目第一页 10/10 全 HTTP 200；同一栏目第 11 页回 500、572 字节、0 枚 node_ 链接；
+      但 node_1269 健康 200 也交出 0 枚子栏链接且页面无错误字样。
+    ⇒ 只能认「异常」与「非 200」，「0 链接」不能当失败信号（否则把健康栏目误报成故障）。
+    """
+
+    PARENTS = {"24", "36", "8015"}
+    LEAVES = {"16", "27", "20"}
+    PLACEHOLDER = {"15"}
+    CHILD = {"24": ["60", "61", "62", "63", "64"],
+             "36": ["70", "71"],
+             "8015": ["8030", "8031", "8196"]}
+
+    def _all_children(self):
+        return sorted(c for v in self.CHILD.values() for c in v)
+
+    def _link(self, nid):
+        return '<a href="/policy/node_%s.html">栏目%s</a>' % (nid, nid)
+
+    def _home(self):
+        ids = sorted(self.LEAVES) + sorted(self.PARENTS) + sorted(self.PLACEHOLDER)
+        return "<html><body>" + "".join(self._link(n) for n in ids) + "</body></html>"
+
+    def _resp(self, text, status=200):
+        return _CtaxResp(text, status=status, ctype="text/html; charset=utf-8")
+
+    def _rebuild(self, break_parent=None, mode="except", max_nodes=120, childless=()):
+        """跑一轮 update_columns，交回 (栏目行, 没收全说明, 探测过的 nodeID, stderr)。"""
+        all_children = self._all_children()
+
+        def art(nid):
+            return {"nodesearchname": "栏" + nid,
+                    "url": "https://www.ctaxnews.com.cn/policy/2026-01/01/content_%s.html" % nid,
+                    "title": "t", "pubDate": "2026-01-01"}
+
+        pages, envs = [], []
+
+        def fake_get(url, params=None, timeout=None, session=None, **kw):
+            path = re.sub(r"^https?://[^/]+", "", url)
+            if path in ("", "/"):
+                return self._resp(self._home())
+            m = re.search(r"node_(\d+)(?:_\d+)?\.html", path)
+            if not m:
+                return self._resp("<html><body>?</body></html>")
+            nid = m.group(1)
+            pages.append(nid)
+            if break_parent and nid == break_parent:
+                if mode == "except":
+                    raise TimeoutError("column page read timed out. timeout=30")
+                return self._resp("<html><body>服务器错误，请稍后重试</body></html>", 500)
+            if nid in childless:
+                return self._resp("<html><body>这一栏健康，但没有子栏</body></html>")
+            kids = self.CHILD.get(nid)
+            if kids:
+                return self._resp("<html><body>" + "".join(self._link(c) for c in kids)
+                                  + "</body></html>")
+            return self._resp("<html><body>没有子栏</body></html>")
+
+        def fake_once(params, session=None):
+            nid = str(params.get("nodeID"))
+            envs.append(nid)
+            if nid in self.PARENTS or nid in self.PLACEHOLDER:
+                return {"foundNum": 0, "article": []}, ""
+            if nid in self.LEAVES or nid in all_children:
+                return {"foundNum": 5, "article": [art(nid)]}, ""
+            return None, "这一枚探测没连上"
+
+        with tempfile.TemporaryDirectory() as td:
+            err = io.StringIO()
+            with mock.patch.object(CT, "_http_get", fake_get), \
+                 mock.patch.object(CT, "_search_once", fake_once), \
+                 mock.patch.object(CT, "COLUMNS_FILE", Path(td) / "ctax_columns.json"), \
+                 mock.patch.object(CT, "SEARCH_MIN_GAP", 0), \
+                 mock.patch.object(CT, "READ_INTERVAL", 0), \
+                 contextlib.redirect_stderr(err):
+                cols, incomplete = CT.update_columns(session=object(),
+                                                     max_nodes=max_nodes)
+            written = json.loads((Path(td) / "ctax_columns.json")
+                                 .read_text(encoding="utf-8"))["columns"]
+        return cols, incomplete, envs, err.getvalue(), written
+
+    def test_control_round_is_complete_and_says_nothing(self):
+        """前提：全部正常时表完整、说明必须是空串——不许把健康轮次报成有缺。"""
+        cols, incomplete, _, _, written = self._rebuild()
+        expected = len(self.LEAVES) + len(self.PARENTS) + len(self._all_children())
+        self.assertEqual(expected, len(cols))
+        self.assertEqual([], self._missing_from(cols))
+        self.assertEqual("", incomplete, incomplete)
+        self.assertEqual(len(cols), len(written))
+
+    def _missing_from(self, cols):
+        got = {str(c["nodeid"]) for c in cols}
+        return [c for c in self._all_children() if c not in got]
+
+    def test_parent_page_exception_names_the_dropped_children(self):
+        """A：父栏目页抛异常 ⇒ 整批孙辈没进表，且必须逐枚点名，不能响亮说"重建完成"。"""
+        cols, incomplete, envs, _, _ = self._rebuild(break_parent="24", mode="except")
+        self.assertEqual(["60", "61", "62", "63", "64"], self._missing_from(cols))
+        self.assertFalse([x for x in envs if x in self.CHILD["24"]],
+                         "这一档根本没为子栏发过探测，说明不该假装探过")
+        self.assertIn("24", incomplete)
+        self.assertIn("TimeoutError", incomplete)
+        self.assertIn("没探测到", incomplete)
+
+    def test_parent_page_http_500_is_not_mistaken_for_a_childless_column(self):
+        """B：旧代码从不看状态码，500 的错误页交出 0 枚链接，读起来像"这栏本无子栏"。"""
+        cols, incomplete, _, _, _ = self._rebuild(break_parent="24", mode="500")
+        self.assertEqual(["60", "61", "62", "63", "64"], self._missing_from(cols))
+        self.assertIn("HTTP 500", incomplete)
+
+    def test_healthy_column_without_children_is_not_reported_as_failure(self):
+        """E：node_1269 那类——HTTP 200 且 0 枚子栏链接是健康的，不得误判成故障。"""
+        cols, incomplete, _, _, _ = self._rebuild(childless=("36",))
+        self.assertEqual(["70", "71"], self._missing_from(cols))
+        self.assertEqual("", incomplete,
+                         "健康但无子栏的父栏目被报成展开失败了：%r" % incomplete)
+
+    def test_probing_cap_reports_which_parents_went_unexpanded(self):
+        """D：撞到 max_nodes 而没去展开的父栏目也要点名（同样丢孙辈、同样无痕过）。"""
+        cols, incomplete, _, _, _ = self._rebuild(max_nodes=6)
+        self.assertTrue(self._missing_from(cols))
+        self.assertIn("上限", incomplete)
+        for nid in self.PARENTS:
+            self.assertIn(nid, incomplete)
+
+
 class TestCtaxSubSkillDocHooks(unittest.TestCase):
     """子技能文档点名的符号要在发货代码里；探针的逐项请求数与 NOTE.md 那张表对得上账。"""
 

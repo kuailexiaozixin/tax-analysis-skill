@@ -2817,6 +2817,238 @@ class TestShui5ColumnTable(unittest.TestCase):
         self.assertIn("栏目表里没有", r["_status"])
 
 
+class TestShui5ClassidIntegrity(unittest.TestCase):
+    """栏目表里 classid 不可用的两种行（上一轮没取到的失败行 / 无链接的健康页），
+    谁都不许把整张表毒掉、不许拼出 'None' 发出去、不许造出站点上不存在的翻页地址。
+
+    判据前提（2026-11-24 实测）：
+    - 失败行旧形状 `{"dir","nav","_error"}` 照样落盘，下游 `resolve_column`/`classid_of`
+      按 classid 查任何一栏都抛 KeyError，`list_column` 先发一个请求再半途崩；
+    - `classid=None` 的行让 `str(None)=="None"` 成真值，`classid_spec('安徽,深圳')`
+      实际发出 `classid='None,12673'`，真站直发这一串回"没有搜索到相关内容"
+      （total=None、0 行）——不是退回全站，是被我们自己的 'None' 盖掉的 0 条；
+    - classid 在 47 栏跨 37 天零漂移（同期 pages 变 6 枚、records 变 39 枚），
+      所以失败行继承上一轮的 classid 不算把旧读数当本轮读数，但必须写明来源。
+    """
+
+    GOOD = TestShui5ScopedSearch.TABLE
+
+    # 旧 build_column_table 写出的失败行形状：只有三枚键，classid 键整个缺失。
+    # 这一组用例钉的是"表里已经躺着一枚这样的行"时读取侧必须自保——发货表今天
+    # 没有这种行（上一轮 47/47 全取到），但旧版本写过的表、或别的途径落盘的表
+    # 都可能带，读取侧不能赌写入侧永远正确。
+    POISONED = [
+        {"dir": "AnHuiShengCaiShuiFaGui", "nav": "", "_error": "HTTP 500"},
+        GOOD[1], GOOD[2],
+    ]
+
+    NONE_ROW = [
+        {"dir": "AnHuiShengCaiShuiFaGui", "nav": "", "label": "安徽", "classid": None,
+         "columns": ["安徽省法规"], "pages": None, "records": None},
+        GOOD[1], GOOD[2],
+    ]
+
+    def _load(self, table):
+        p = mock.patch.object(SH, "load_columns", return_value=table)
+        p.start()
+        self.addCleanup(p.stop)
+        return table
+
+    def test_poisoned_row_does_not_break_classid_lookup(self):
+        """一枚失败行不许把整表的 classid 查法毒掉。
+
+        必须按数字 classid 查一遍：目录名那一支在 `resolve_column` 第一个分支就 return
+        了，碰不到按 classid 查那一段——2026-11-24 我用注入把那段还原成旧的下标
+        `str(r["classid"])` 时，只查目录名的用例全绿，是覆盖不足不是实现好。旧写法的
+        真症状是"表里有一枚失败行 ⇒ 按 classid 查任何一栏都 KeyError"。
+        """
+        self._load(self.POISONED)
+        got = SH.resolve_column("ShenZhenShiCaiShuiFaGui")
+        self.assertIsNotNone(got)
+        self.assertEqual(12673, got["classid"])
+        self.assertEqual("12673", SH.classid_of("ShenZhenShiCaiShuiFaGui"))
+        # POISONED 里留下的两枚完好行是 GOOD[1] 深圳(12673) 与 GOOD[2] 山西(181)；
+        # 北京(152) 那一枚被换成失败行了，所以按 152 查应当是"查不到"而不是炸。
+        for key, want in (("12673", "ShenZhenShiCaiShuiFaGui"),
+                          ("181", "category_181")):
+            hit = SH.resolve_column(key)
+            self.assertIsNotNone(hit, f"失败行把按 classid {key} 查这一栏毒成了查不到")
+            self.assertEqual(want, hit["dir"])
+            self.assertEqual(key, SH.classid_of(key))
+        # 表里真没有的那个编号必须交回 None（旧写法在这里抛 KeyError，把"没有"变成崩）
+        self.assertIsNone(SH.resolve_column("152"), "表里没有的 classid 应当查不到")
+        self.assertEqual("", SH.classid_of("152"))
+
+    def test_failed_row_in_table_is_refused_without_any_request(self):
+        """失败行交给 list_column：拒绝发请求、说明是上一轮的失败行，而不是先发一发再崩。"""
+        self._load(self.POISONED)
+        sent = []
+
+        class S:
+            def get(self, url, **kw):
+                sent.append(url)
+                raise AssertionError("失败行不该触发任何请求")
+
+        r = SH.list_column("AnHuiShengCaiShuiFaGui", pages=2, session=S(), gap=0)
+        self.assertEqual([], sent, "失败行不该触发任何请求")
+        self.assertEqual([], r["results"])
+        self.assertIn("没取到", r["_status"])
+        self.assertIn("HTTP 500", r["_status"])
+        self.assertIn("classid", r["_status"])
+        self.assertIn("HTTP 500", r.get("_error", ""))
+
+    def test_column_without_classid_yields_empty_string_not_none_string(self):
+        """健康页无链接 => classid=None：classid_of 必须交回空串，不能是 str(None) 的 'None'。"""
+        self._load(self.NONE_ROW)
+        self.assertEqual("", SH.classid_of("AnHuiShengCaiShuiFaGui"),
+                         "str(None)=='None' 是真值，交出去就会被当有效编号拼进请求")
+
+    def test_classid_spec_never_wires_the_word_none(self):
+        """传栏名换算 classid：表里有 None 行时宁可整体拒绝，也不把 'None' 拼进串里发出去。"""
+        self._load(self.NONE_ROW)
+        self.assertEqual("", SH.classid_spec("安徽,深圳"))
+
+    def test_none_classid_column_reads_first_page_only_and_says_so(self):
+        """无编号的栏翻页地址造不出来：只读第 1 页并写明，不许造 None_2.html 这种地址。"""
+        self._load(self.NONE_ROW)
+        urls = []
+
+        class R:
+            status_code = 200
+            url = "https://www.shui5.cn/article/x/"
+            content = ("<html><body>"
+                       '<div class="xwt2"><div class="xwt2_a">'
+                       '<a href="https://www.shui5.cn/article/42/9.html" title="标题9">可见9</a>'
+                       "</div></div></body></html>").encode("utf-8")
+
+        class S:
+            def get(self, url, **kw):
+                urls.append(url)
+                return R()
+
+        r = SH.list_column("AnHuiShengCaiShuiFaGui", pages=3, session=S(), gap=0)
+        self.assertEqual([SH.SHUI5_BASE + "article/AnHuiShengCaiShuiFaGui/"], urls)
+        self.assertIn("没有可用 classid", r["_status"])
+        self.assertIn("只读了第 1 页", r["_status"])
+
+    def test_shipped_table_survives_a_poisoned_row(self):
+        """控制组 + 回归：健康表与盘上发货表都不受这些改动影响。"""
+        rows = SH.load_columns()
+        self.assertTrue(len(rows) >= 40)
+        self.assertEqual("12673", SH.classid_of("深圳"))
+        self._load(self.GOOD)
+        self.assertEqual("12673", SH.classid_of("深圳"))
+
+    def test_failed_row_keeps_keys_and_records_source(self):
+        """重建时某一栏取不到：那一行必须键齐（classid 继承上一轮并写明来源、
+        pages/records 留空），并把这一栏点名进 _status 与 _error。"""
+        self._load(self.GOOD)
+        home = ('<html><body>'
+                '<a href="https://www.shui5.cn/article/ShenZhenShiCaiShuiFaGui/">深圳</a>'
+                '<a href="https://www.shui5.cn/article/BeiJingShiCaiShuiFaGui/">北京</a>'
+                '</body></html>').encode("utf-8")
+        ok = ('<html><body>'
+              '<a href="https://www.shui5.cn/article/152_1.html">p</a>'
+              '<a href="https://www.shui5.cn/article/152_2.html">q</a>'
+              '<div class="xwt2"><div class="xwt2_a">'
+              '<a href="https://www.shui5.cn/article/42/7.html" title="标题7">可见7</a>'
+              '</div></div></body></html>').encode("utf-8")
+
+        class R:
+            def __init__(self, content, code=200):
+                self.content = content
+                self.status_code = code
+                self.url = "https://www.shui5.cn/"
+
+        class S:
+            def get(self, url, **kw):
+                if "BeiJingShiCaiShuiFaGui" in url:
+                    return R(b"", 500)
+                return R(home if url.rstrip("/") + "/" == SH.SHUI5_BASE else ok)
+
+        t = SH.build_column_table(session=S(), gap=0)
+        by = {r["dir"]: r for r in t["columns"]}
+        bad = by["BeiJingShiCaiShuiFaGui"]
+        for k in ("dir", "nav", "label", "classid", "columns", "pages", "records", "_error"):
+            self.assertIn(k, bad, f"失败行少了 {k} 这一枚键，下游就会 KeyError")
+        self.assertEqual(152, bad["classid"], "classid 实测跨 37 天零漂移，可以继承")
+        self.assertEqual("上一轮的表", bad["_classid_from"])
+        self.assertIsNone(bad["pages"])
+        self.assertIsNone(bad["records"])
+        self.assertIn("HTTP 500", bad["_error"])
+        self.assertIn("1 栏这一轮没取到", t["_status"])
+        self.assertIn("不能当成这一轮的读数", t["_status"])
+        self.assertIn("BeiJingShiCaiShuiFaGui", t.get("_error", ""))
+        # 完好那栏照常按 classid 查得到，一枚失败行不毒全表
+        self.assertIsNotNone(SH.resolve_column("152") or by.get("ShenZhenShiCaiShuiFaGui"))
+
+    def test_control_round_of_build_reports_no_failure(self):
+        """控制组：全栏都取到时不许出现任何"没取到"的字样，也不许有 _error。"""
+        self._load(self.GOOD)
+        home = ('<html><body>'
+                '<a href="https://www.shui5.cn/article/ShenZhenShiCaiShuiFaGui/">深圳</a>'
+                '</body></html>').encode("utf-8")
+        ok = ('<html><body>'
+              '<a href="https://www.shui5.cn/article/12673_1.html">p</a>'
+              '<a href="https://www.shui5.cn/article/12673_2.html">q</a>'
+              '<div class="xwt2"><div class="xwt2_a">'
+              '<a href="https://www.shui5.cn/article/42/7.html" title="标题7">可见7</a>'
+              '</div></div></body></html>').encode("utf-8")
+
+        class R:
+            def __init__(self, content):
+                self.content = content
+                self.status_code = 200
+                self.url = "https://www.shui5.cn/"
+
+        class S:
+            def get(self, url, **kw):
+                return R(home if url.rstrip("/") + "/" == SH.SHUI5_BASE else ok)
+
+        t = SH.build_column_table(session=S(), gap=0)
+        self.assertNotIn("_error", t)
+        self.assertNotIn("没取到", t["_status"])
+        self.assertEqual(12673, t["columns"][0]["classid"])
+        self.assertNotIn("_classid_from", t["columns"][0])
+
+    def test_classid_zero_is_not_mistaken_for_missing(self):
+        """classid 一律 `is None` 判，不许用真值判。
+
+        3.62.5 那条同族教训：`if code and code != 200` 会漏判 code=0。这里同理，
+        `if not cid` 会把编号 0 读成"这一栏没有编号"，于是一栏明明能用却拒绝翻页、
+        还被写明"没有可用 classid"——把判据自己造出来的缺失说成站点的缺失。
+        今天表里没有 classid=0（47 栏实测最小 152），这条钉的是判据写法不是站点现状。
+        """
+        zero = [{"dir": "LingShiCaiShuiFaGui", "nav": "零号", "label": "零号栏",
+                 "classid": 0, "columns": [], "pages": 2, "records": 10},
+                self.GOOD[1], self.GOOD[2]]
+        self._load(zero)
+        self.assertEqual("0", SH.classid_of("LingShiCaiShuiFaGui"),
+                         "0 是有效编号，不能读成空串")
+        self.assertEqual("0", SH.classid_spec("零号"))
+        urls = []
+
+        class R:
+            status_code = 200
+            url = "https://www.shui5.cn/article/x/"
+            content = ("<html><body>"
+                       '<div class="xwt2"><div class="xwt2_a">'
+                       '<a href="https://www.shui5.cn/article/42/9.html" title="标题9">可见9</a>'
+                       "</div></div></body></html>").encode("utf-8")
+
+        class S:
+            def get(self, url, **kw):
+                urls.append(url)
+                return R()
+
+        r = SH.list_column("LingShiCaiShuiFaGui", pages=2, session=S(), gap=0)
+        self.assertEqual([SH.SHUI5_BASE + "article/LingShiCaiShuiFaGui/",
+                          SH.SHUI5_BASE + "article/LingShiCaiShuiFaGui/0_2.html"], urls,
+                         "classid=0 的栏必须照常翻页，不能当成没有编号")
+        self.assertNotIn("_error", r)
+        self.assertNotIn("没有可用 classid", r["_status"])
+
+
 class TestAggregatorShui5Attribution(unittest.TestCase):
     """搜狗被拦时税屋的空算不算被连带，由这一轮站内那一路的回报决定，不再靠推断。"""
 

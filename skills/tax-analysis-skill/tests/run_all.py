@@ -52,6 +52,8 @@ OFFLINE_GROUP = [
     ("研发三套口径对照回归（基准唯一/取值合原文/八行齐全/隔离纪律在场）",
      [PY, str(TESTS_DIR / "test_rd_calibers.py")]),
     ("fgk 离线用例（翻页/正文/缓存）", [PY, str(TESTS_DIR / "test_tax_fgk.py")]),
+    ("fgk 清单落盘完整性用例（失败轮不写盘、旧残缺不回放、合法零命中仍缓存）",
+     [PY, str(TESTS_DIR / "test_fgk_cache_completeness.py")]),
     ("同步器离线用例（直链diff/小内容守卫/内容hash复用）",
      [PY, str(TESTS_DIR / "test_tax_sync.py")]),
     ("文号链接缓存用例（官方域判据/缓存闭环/非官方不落库）",

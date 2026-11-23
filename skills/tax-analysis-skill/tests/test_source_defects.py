@@ -3173,6 +3173,66 @@ class TestCtaxSearchContract(_CtaxOffline):
         self.assertIn("负数", r["_status"])
 
 
+class TestCtaxMidPageDropout(_CtaxOffline):
+    """翻页中途的空页：站点实测不会在吐满之前给空页，所以那是断供不是尽头。
+
+    判据前提来自现拉读数（.tmp-inspect\\ctax_fullend_control.py）：
+    「财政部 税务总局公告2026年第29号」foundNum=4 收到 4 行、「关税税则委员会
+    2024」foundNum=6 收到 6 行，两词都在吐满时正常收口、没等到空页；真没命中的
+    词首页即空且 foundNum=0。旧写法 `if not rows: break` 把中途空页当列表尽头，
+    再落到"已到页数上限 40 页"那支——只翻了 2 页却说成翻到底，且 _error 不给，
+    聚合层（tax_aggregator.py:381）就不会把这一源记进 errors。
+    """
+
+    def _pages(self, found_first, rows_first, found_second, rows_second):
+        return {CTAX_SEARCH: [
+            _CtaxResp(_ctax_json([_ctax_row_json(title="A%d" % i)
+                                  for i in range(rows_first)], found=found_first)),
+            _CtaxResp(_ctax_json([_ctax_row_json(title="B%d" % i)
+                                  for i in range(rows_second)], found=found_second)),
+        ]}
+
+    def test_dropout_raises_flag_not_silent_end(self):
+        """控制组之外：站点报 5 条、第 2 页给空 ⇒ 必须留 _error 且说清不是完整集合。"""
+        s = _CtaxSession(self._pages(5, 2, 5, 0))
+        r = CT.search_ctax("增值税", fetch_all=True, session=s)
+        self.assertEqual(2, len(s.requested))
+        self.assertEqual(2, len(r["results"]))
+        self.assertEqual(5, r["total"])
+        self.assertIn("断供", r["_status"])
+        self.assertIn("不是这一词的完整集合", r["_status"])
+        self.assertTrue(r.get("_error"), "少了 _error，聚合层会把这一源报成'取到了'")
+        self.assertEqual(r["_status"], r["_error"])
+
+    def test_honest_end_of_list_is_not_flagged(self):
+        """控制组：吐满即收口（foundNum=2、首页给满）不得报断供。"""
+        s = _CtaxSession({CTAX_SEARCH: _CtaxResp(_ctax_json(
+            [_ctax_row_json(title="A1"), _ctax_row_json(title="A2")], found=2))})
+        r = CT.search_ctax("增值税", fetch_all=True, session=s)
+        self.assertEqual(1, len(s.requested), "收满后不该再要下一页")
+        self.assertEqual(2, len(r["results"]))
+        self.assertNotIn("_error", r)
+        self.assertNotIn("断供", r["_status"])
+
+    def test_genuine_zero_hit_is_still_zero_hit(self):
+        """真 0 命中（首页即空、foundNum=0）照旧报"没有命中"，不许判成故障。"""
+        s = _CtaxSession({CTAX_SEARCH: _CtaxResp(_ctax_json([], found=0))})
+        r = CT.search_ctax("增值税", size=5, session=s)
+        self.assertEqual([], r["results"])
+        self.assertEqual(0, r["total"])
+        self.assertIn("没有命中", r["_status"])
+        self.assertNotIn("_error", r)
+
+    def test_max_rows_cut_is_not_reported_as_dropout(self):
+        """按 max_rows 主动裁掉不是断供：话术仍应是"已到上限，不是这一词只有这些"。"""
+        s = _CtaxSession(self._pages(10, 2, 10, 3))
+        r = CT.search_ctax("增值税", fetch_all=True, max_rows=3, session=s)
+        self.assertEqual(3, len(r["results"]))
+        self.assertNotIn("断供", r["_status"])
+        self.assertNotIn("_error", r)
+        self.assertIn("不是这一词只有这些", r["_status"])
+
+
 class TestCtaxColumnScope(_CtaxOffline):
     """栏目限定的三种判据：唯一命中、重名、表里没有。后两种都不发出请求。"""
 

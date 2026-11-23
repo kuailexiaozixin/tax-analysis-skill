@@ -236,7 +236,18 @@ class ListSynchronizer:
                 "首页条数": len(first.get("rows") or [])}
 
     def crawl(self):
-        """按 page_size 爬满 total，返回 (rows, total)。"""
+        """按 page_size 爬满 total，返回 (rows, total)。
+
+        停止条件只有两个：收满 total，或翻到 max_pages。中途遇到空页**不算正常
+        收尾**——清单源的 total 实测是诚实的（2026-11-23 现拉"财税文件"栏
+        total=1533，第 1–15 页各 100 条、第 16 页 33 条恰好凑满，第 17 页才回空），
+        所以"还没收满就断供"只可能是服务端把一次故障退化成了空结果。原先这里
+        `if not rows: break` 会把 50/1533 当成完整集合交下去，sync() 随即
+        判定"已更新"并用它覆盖旧索引——比 NPC 那条更狠：NPC 只是这一轮查空，
+        这里是把好产物写坏，且 `总数=1533 / 条目数=50` 两个自相矛盾的数一起
+        落进 state，下一轮 --check 还会因为 total 没变而报"无更新"，把事故
+        伪装成平静。宁可少更不写坏，这句原本就写在类 docstring 里。
+        """
         page, collected, total = 1, [], None
         while True:
             res = self.fetch_page(page) or {}
@@ -244,7 +255,13 @@ class ListSynchronizer:
             if total is None:
                 total = int(res.get("total") or 0)
             collected.extend(rows)
-            if not rows or (total and len(collected) >= total):
+            if not rows:
+                if total and len(collected) < total:
+                    raise SyncError(
+                        f"第 {page} 页返回空，但只收了 {len(collected)}/{total} 条："
+                        f"清单源 total 实测诚实，中途断供判为故障，拒绝当作完整集合")
+                break
+            if total and len(collected) >= total:
                 break
             if page >= self.max_pages:
                 raise SyncError(

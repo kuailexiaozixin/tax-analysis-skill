@@ -173,6 +173,32 @@ class TestListSynchronizer(unittest.TestCase):
         self.assertFalse(res["成功"])
         self.assertEqual([], self.built, "截断却构建了")
 
+    def test_mid_crawl_empty_page_is_not_full_collection(self):
+        """爬到一半回空页、却还没收满 total：判为故障，不得当成"列表就到这"。
+
+        清单源的 total 实测诚实（2026-11-23 现拉"财税文件"栏 total=1533，逐页给满
+        到第 16 页恰好凑满，第 17 页才空），所以中途断供只可能是服务端把故障
+        退化成了空结果。旧行为把 2/4 当完整集合交下去，sync() 判"已更新"并用它
+        覆盖旧索引，比查空更狠——是好产物被写坏，且下一轮 --check 因 total 未变
+        报"无更新"，把事故伪装成平静。
+        """
+        fp = _FakePages({1: [_row("A", "http://t/A"), _row("B", "http://t/B")]},
+                        total=4)          # 声称 4 条，第 2 页起给空
+        res = self._syn(fp, page_size=2, max_pages=10).sync()
+        self.assertEqual("抓取失败", res["动作"])
+        self.assertFalse(res["成功"])
+        self.assertEqual([], self.built, "半途中断却被构建了")
+        self.assertIn("2/4", res["错误"], f"错误句要说清收了多少：{res['错误']}")
+
+    def test_honest_end_of_list_still_builds(self):
+        """控制组：收满 total 后的正常收尾照旧构建，守卫不许误拦。"""
+        fp = _FakePages({1: [_row("A", "http://t/A"), _row("B", "http://t/B")],
+                         2: [_row("C", "http://t/C")]}, total=3)
+        res = self._syn(fp, page_size=2, max_pages=10).sync()
+        self.assertEqual("已更新", res["动作"])
+        self.assertEqual([1, 2], fp.calls)
+        self.assertEqual(3, res["条目数"])
+
 
 class TestSeedCitedCache(unittest.TestCase):
     """清单索引 → 文号缓存的离线预热：批量种入，让 locate_cited_document 离线命中。"""

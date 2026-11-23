@@ -105,6 +105,77 @@ class TestFgkDeepPageMarker(unittest.TestCase):
             FGK.FGK_SHALLOW_PAGES = old
 
 
+# ── ③b 中途空页不能当列表尽头（红线⑦同族，判据是页码不是行数）───────────────
+class TestFgkMidPageDropout(unittest.TestCase):
+    """`_scan_list` 旧写法 `if not page_items: break` 把中途空页当尽头。
+
+    判据前提实测（2026-11-24，`.tmp-inspect\\fgk_page_honesty.py`，四词）：空页页码
+    恒等于 ceil(total/10)+1 —— total=62 逐页 [10,10,10,10,10,10,2] 空页第 8 页；
+    total=16 [10,6] 空页第 3 页；total=47 [10,10,10,10,7] 空页第 6 页；total=2 首屏
+    给满不发第二页。所以空页落在 ceil(total/10) 之内只可能是这一页没取到。
+    """
+
+    def _scan(self, total, pages, errors=None, **kw):
+        """pages: {页码: 该页条目数}；errors: {页码: 该页 _error}"""
+        calls = []
+        errors = errors or {}
+
+        def fake_search(keyword, page=1, size=10, filters=None, **opts):
+            calls.append(page)
+            n = pages.get(page, 0)
+            out = {"total": total, "results": _fgk_hit(n, "p%d" % page)}
+            if page in errors:
+                out["_error"] = errors[page]
+                out["results"] = []
+            return out
+
+        with mock.patch.object(FGK, "search_chinatax", side_effect=fake_search):
+            r = FGK._scan_list("测试词", size=kw.pop("size", 99),
+                               max_pages=kw.pop("max_pages",
+                                                max(pages) + 3 if pages else 4),
+                               adaptive=kw.pop("adaptive", False), **kw)
+        return r, calls
+
+    def test_mid_crawl_empty_page_is_flagged_as_dropout(self):
+        """站点报 62 条、第 2 页就给空：必须说"断供"，不能交回 10 条装完整。"""
+        r, calls = self._scan(62, {1: 10})
+        self.assertEqual([1, 2], calls, "第 2 页空应当即停，不再往后翻")
+        self.assertEqual(10, r["total"])
+        self.assertEqual(62, r["total_hits"], "站点总数照旧透出，两个数要能并排看")
+        self.assertIn("断供", r["_error"])
+        self.assertIn("不是这一词的完整清单", r["_error"])
+        self.assertEqual(r["_error"], r["_empty_reason"],
+                         "tax_answer.py:603 认的是 _empty_reason，两者必须同源")
+
+    def test_honest_end_of_list_is_not_flagged_as_dropout(self):
+        """控制组：total=12，第 1 页 10 条、第 2 页 2 条、第 3 页才空 —— 自然尽头。"""
+        r, calls = self._scan(12, {1: 10, 2: 2})
+        self.assertEqual([1, 2, 3], calls)
+        self.assertEqual(12, r["total"])
+        self.assertNotIn("_error", r, "吐满之后的空页不是断供，不许报错")
+        self.assertNotIn("断供", r.get("_empty_reason", ""))
+
+    def test_request_failure_on_later_page_is_not_blamed_on_the_source(self):
+        """第 2 页是请求失败（交回空 results）：那档归 first_error，不判断供。
+
+        少了判据里 `not found.get("_error")` 那一枚条件，我们的网络问题就会被写成
+        "站点提前给了空页"，把责任记到清单源头上去。
+        """
+        r, calls = self._scan(62, {1: 10}, errors={2: "HTTP 500"})
+        self.assertEqual([1, 2], calls)
+        self.assertIn("HTTP 500", r["_error"])
+        self.assertNotIn("断供", r["_error"])
+        self.assertTrue(r.get("_fetch_failed"), "取数失败这一枚标记不能被断供分支吃掉")
+
+    def test_genuine_zero_hit_is_still_zero_hit(self):
+        """控制组：total=0 首屏即空 —— 仍是"翻完未筛出"，不是断供也不是取数失败。"""
+        r, calls = self._scan(0, {})
+        self.assertEqual([1], calls)
+        self.assertEqual(0, r["total"])
+        self.assertNotIn("断供", r.get("_error", ""))
+        self.assertNotIn("断供", r.get("_empty_reason", ""))
+
+
 # ── ② 缺了哪一层由程序说，不靠人推断 ───────────────────────────────────────
 class TestAggregatorGaps(unittest.TestCase):
     """源级失败要翻译成"缺了哪一层、能不能拿别的源顶"。"""

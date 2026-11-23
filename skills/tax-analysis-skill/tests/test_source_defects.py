@@ -552,6 +552,91 @@ class TestWechatSogouGate(unittest.TestCase):
         self.assertGreaterEqual(dt, 0.4, "两次请求之间没有按最小间隔让路")
 
 
+class _WxResp:
+    """一枚够用的 requests.Response 替身：只带 read_article 真读的四个字段。"""
+
+    def __init__(self, html, url, status=200):
+        self.text = html
+        self.content = html.encode("utf-8")
+        self.url = url
+        self.status_code = status
+
+
+class TestWechatCaptchaGate(unittest.TestCase):
+    """微信正文这道墙按**落地 URL** 判，不按正文关键词判。
+
+    2026-11-23 实测：手机版 UA 取回的那份 wappoc_appmsgcaptcha 落地页，正文里
+    「环境异常/验证/去验证/tcaptcha」一个都不出现（验证控件是脚本注入的），
+    所以旧实现按正文关键词的分支从不命中，验证码门被误报成"未找到正文容器"。
+    """
+
+    CAPTCHA_URL = "https://mp.weixin.qq.com/mp/wappoc_appmsgcaptcha?poc_token=x"
+    # 真实落地页正文的压缩形态：只有壳文案，没有任何验证词。
+    CAPTCHA_BODY = ('<html><body><div class="weui-msg"><div class="bd">'
+                    '<div>视频</div><div>小程序</div><div>赞</div>'
+                    '<div>在看</div></div></div></body></html>')
+    ARTICLE_URL = "https://mp.weixin.qq.com/s?src=11&timestamp=1&ver=1"
+    # 真实文章页里 js_content 的闭合 </div> 后面紧跟 <script>（extractor 的正则依赖
+    # 这个页面形态），fixture 必须照实搭，不能直接 </body> 收尾。
+    ARTICLE_BODY = ('<html><body><div id="js_content"><p>第一段正文</p>'
+                    '<p>第二段正文</p></div>'
+                    '<script>var biz="";</script></body></html>')
+
+    def _read_with(self, html, landed_url, status=200):
+        calls = {}
+
+        def fake_get(url, **kw):
+            calls["url"] = url
+            calls["kw"] = kw
+            return _WxResp(html, landed_url, status)
+
+        old = W.requests.get
+        try:
+            W.requests.get = fake_get
+            return W.read_article("https://mp.weixin.qq.com/s?src=11&original=1"), calls
+        finally:
+            W.requests.get = old
+
+    def test_captcha_landing_is_named_as_captcha_not_missing_selector(self):
+        (body, err), _ = self._read_with(self.CAPTCHA_BODY, self.CAPTCHA_URL)
+        self.assertEqual("", body, "验证码门不该返回正文")
+        self.assertIn("验证码门", err, "落地验证码页必须报成验证码门：%r" % err)
+        self.assertNotIn("未找到正文容器", err,
+                         "又退回老 bug：把验证码门误报成正文容器缺失")
+
+    def test_the_body_really_carries_no_verification_word(self):
+        """判据必须落在 URL 上——这条把"正文无验证词"这一实测前提钉住。"""
+        for word in ("环境异常", "验证", "去验证", "tcaptcha", "js_content"):
+            self.assertNotIn(word, self.CAPTCHA_BODY,
+                             "fixture 里混进了 %s，判据就不再是 URL 了" % word)
+
+    def test_healthy_article_still_reads_through(self):
+        (body, err), _ = self._read_with(self.ARTICLE_BODY, self.ARTICLE_URL)
+        self.assertEqual("", err, "正常文章页不该报错：%r" % err)
+        self.assertIn("第一段正文", body)
+        self.assertIn("第二段正文", body)
+
+    def test_non_200_is_still_http_status(self):
+        (_, err), _ = self._read_with(self.CAPTCHA_BODY, self.ARTICLE_URL, status=503)
+        self.assertIn("HTTP 503", err, "状态码分支先于 URL 判据")
+
+    def test_body_keyword_branch_is_only_a_fallback(self):
+        """URL 不是验证码页、但正文确实带验证词时，兜底分支仍要认出来。"""
+        (body, err), _ = self._read_with(
+            "<html><body>当前环境异常，完成验证后即可继续访问</body></html>",
+            self.ARTICLE_URL)
+        self.assertEqual("", body)
+        self.assertIn("验证页", err)
+
+    def test_classifier_uses_landed_url_not_the_requested_one(self):
+        """判据读 r.url（跟完重定向的落地），不是读传进来的原始 URL。"""
+        (_, err), calls = self._read_with(self.CAPTCHA_BODY, self.CAPTCHA_URL)
+        self.assertIn("验证码门", err)
+        # 原始 URL 里没有 appmsgcaptcha；若实现误用入参判，就不会命中
+        self.assertNotIn("appmsgcaptcha", calls["url"])
+
+
+
 # ── ① NPC 闸要包住下载路径 ────────────────────────────────────────────────
 class TestNpcGateCoversDownload(unittest.TestCase):
     def test_get_download_url_uses_the_gated_request(self):

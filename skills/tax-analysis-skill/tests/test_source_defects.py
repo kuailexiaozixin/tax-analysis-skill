@@ -26,6 +26,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -714,6 +715,126 @@ class TestNpcAppErrorIsNotZeroHits(unittest.TestCase):
         r = self._search_with('{"total":0,"rows":[],"code":200,"msg":"查询成功"}')
         self.assertEqual(0, r["total"])
         self.assertEqual([], r["results"])
+
+
+class _NpcEnvelopeResp:
+    """一枚够用的 NPC 响应替身：HTTP 永远 200，业务状态只活在 JSON 里。"""
+
+    def __init__(self, payload):
+        self.status_code = 200
+        self.headers = {"Content-Type": "application/json"}
+        self.text = payload
+        self.content = payload.encode("utf-8")
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return json.loads(self.text)
+
+
+class TestNpcSharedBusinessGuard(unittest.TestCase):
+    """判据只在 tax_http 一处，检索／详情／下载三条路共用它。
+
+    三条路各抄一份正是本仓反复踩的"三处重复必漂移"，也是 short_reason 当初
+    要收进 tax_http 的理由。这里既验判据本身，也验两条后接的路确实在用它。
+    实测信封（2026-11-23 现拉）：检索正常 {"total":36,"rows":[…],"code":200,
+    "msg":"查询成功"}；详情正常 {"msg":"操作成功","code":200,"data":{…}}；
+    下载正常 {"msg":"操作成功","code":200,"data":{"urlIn":…,"url":…}}；
+    三者出错都是 {"msg":"系统异常","code":500} 而 HTTP 仍 200。
+    """
+
+    def test_helper_truth_table(self):
+        for payload, should_flag in (
+            ({"code": 200, "msg": "查询成功"}, False),
+            ({"code": 500, "msg": "系统异常"}, True),
+            ({"code": "200"}, False),          # 字符串 200 不得发假警
+            ({"code": "500"}, True),
+            ({"code": 0, "msg": "x"}, True),   # 0 是 falsy，不能写成 if code and ...
+            ({"msg": "没有 code 键"}, False),
+            ({}, False),
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(should_flag,
+                                 tax_http.npc_business_error(payload) is not None)
+
+    def test_helper_tolerates_non_dict(self):
+        """接口哪天回个 list／字符串／None，判据不能自己先炸。"""
+        for bad in ([], "text", None, 5):
+            with self.subTest(value=bad):
+                self.assertIsNone(tax_http.npc_business_error(bad))
+
+    def test_error_message_says_it_is_not_an_empty_result(self):
+        reason = tax_http.npc_business_error({"code": 500, "msg": "系统异常"})
+        self.assertIn("业务失败", reason)
+        self.assertIn("没有命中", reason)
+
+    def _detail_call(self, payload, tag):
+        """用一次性 bbbs_id 走详情路。
+
+        id 必须每次不同：fetch_detail 命中缓存就直接返回、根本不碰 _request，
+        固定 id 会让上一轮（尤其是注入变异那一轮）留下的缓存条目冒充本轮结果，
+        测出来的红绿与实现无关。
+        """
+        old = DT._request
+        try:
+            DT._request = lambda url, **kw: _NpcEnvelopeResp(payload)
+            return DT.fetch_detail("SHARED-%s-%s" % (tag, uuid.uuid4().hex[:12]))
+        finally:
+            DT._request = old
+
+    def test_detail_business_error_raises_not_empty_title(self):
+        """详情出错时旧行为是 title=''，再被 preview_law 翻成 ValueError("Law not found")。"""
+        try:
+            d = self._detail_call('{"msg":"系统异常","code":500}', "ERR")
+        except RuntimeError as e:
+            self.assertIn("业务失败", str(e))
+            return
+        self.fail("详情错误信封被静默读成空标题了：%r" % d.get("title"))
+
+    def test_detail_healthy_envelope_still_parses(self):
+        d = self._detail_call(
+            '{"msg":"操作成功","code":200,'
+            '"data":{"title":"中华人民共和国增值税法","sxx":3}}', "OK")
+        self.assertEqual("中华人民共和国增值税法", d["title"])
+
+    def test_empty_detail_is_not_cached(self):
+        """取不到就不落缓存：一次抖动被钉住整个 TTL 后，每轮都回放空壳、不再重试。"""
+        bbbs = "SHARED-NOCACHE-" + uuid.uuid4().hex[:12]
+        old = DT._request
+        try:
+            DT._request = lambda url, **kw: _NpcEnvelopeResp(
+                '{"msg":"操作成功","code":200,"data":{"title":"","sxx":0}}')
+            first = DT.fetch_detail(bbbs)
+            self.assertEqual("", first["title"])
+            self.assertFalse(first.get("_from_cache"), "空结果不该进缓存")
+            # 换成健康载荷再取：若空壳被缓存了，这里会拿到缓存的空标题而不是新数据
+            DT._request = lambda url, **kw: _NpcEnvelopeResp(
+                '{"msg":"操作成功","code":200,"data":{"title":"中华人民共和国增值税法","sxx":3}}')
+            again = DT.fetch_detail(bbbs)
+        finally:
+            DT._request = old
+        self.assertEqual("中华人民共和国增值税法", again["title"],
+                         "空标题被缓存住了：一次取空会回放整个 TTL")
+
+    def test_download_business_error_raises_not_none(self):
+        old = DT._request
+        try:
+            DT._request = lambda url, **kw: _NpcEnvelopeResp('{"msg":"系统异常","code":500}')
+            with self.assertRaises(RuntimeError):
+                DT.get_download_url("SHARED-DL")
+        finally:
+            DT._request = old
+
+    def test_download_genuine_no_file_still_returns_none(self):
+        """真没有该格式附件（code=200 而 data 里无 url）必须照旧回 None，不许报错。"""
+        old = DT._request
+        try:
+            DT._request = lambda url, **kw: _NpcEnvelopeResp(
+                '{"msg":"操作成功","code":200,"data":{}}')
+            self.assertIsNone(DT.get_download_url("SHARED-NONE"))
+        finally:
+            DT._request = old
 
 
 

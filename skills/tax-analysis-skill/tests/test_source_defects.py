@@ -637,6 +637,69 @@ class TestWechatCaptchaGate(unittest.TestCase):
         self.assertNotIn("appmsgcaptcha", calls["url"])
 
 
+class _WxSession:
+    """替身 Session：search_wechat 只用 headers.update 与 .get 两件事。"""
+
+    def __init__(self, resp):
+        self.resp = resp
+        self.headers = {}
+        self.get_calls = []
+
+    def get(self, url, **kw):
+        self.get_calls.append(url)
+        return self.resp
+
+
+class TestWechatSearchZeroHit(unittest.TestCase):
+    """搜狗微信检索：真 0 命中与"页面结构变了/验证页"必须分开。
+
+    2026-11-24 实测（.tmp-inspect\\wechat_emptyshape_probe.py 现拉）：
+    0 命中页 HTTP 200、`blocks=0`，但页面带 `<div class="b404-box"
+    id="noresult_part1_container">` 与"没有找到相关的微信公众号文章。"；
+    有结果页（"研发费用加计扣除"、"增值税法 2026 实施"，blocks=10）
+    都不带这枚标记。旧实现 `if not blocks` 把两种捏成一句
+    "检索结果为空或页面结构已变"，于是**合法的零命中也被报成取数失败**
+    （聚合层 tax_aggregator.py:381 只认 _error 就记进 errors）——
+    方向与断供那条相反：这里是把"没有"说成"失败"。
+    """
+
+    ZERO_HIT_HTML = ('<html><body><div class="b404-box" id="noresult_part1_container">'
+                     '<p class="p1">呀！</p><p class="p3">没有找到相关的微信公众号文章。</p>'
+                     '</div></body></html>')
+    BROKEN_HTML = "<html><body> totally restructured, no blocks, no marker </body></html>"
+
+    def _search_with(self, html, url="https://weixin.sogou.com/weixin?type=2&query=x"):
+        resp = _WxResp(html, url, 200)
+        fake = _WxSession(resp)
+        old = W._sogou_get
+        try:
+            W._sogou_get = lambda sess, u, **kw: fake.get(u)
+            return W.search_wechat("某词", size=3)
+        finally:
+            W._sogou_get = old
+
+    def test_genuine_zero_hit_is_clean_not_a_failed_channel(self):
+        r = self._search_with(self.ZERO_HIT_HTML)
+        self.assertEqual(0, r["total"])
+        self.assertFalse(r.get("_error"),
+                         "0 命中不该被报成取数失败，聚合层会把它记进 errors")
+        self.assertTrue(r["results"] == [])
+
+    def test_structurally_broken_page_still_reports_error(self):
+        r = self._search_with(self.BROKEN_HTML)
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_error"),
+                        "无结果块又无 noresult 标记的页面必须报错，不能静默当 0 条")
+
+    def test_marker_constant_is_real_and_discriminating(self):
+        """把实测前提钉住：标记常量就是站点回的那枚 id；有结果的 fixture 不含它。"""
+        self.assertEqual("noresult_part1_container", W.NO_RESULT_MARK)
+        self.assertIn(W.NO_RESULT_MARK, self.ZERO_HIT_HTML)
+        self.assertNotIn(W.NO_RESULT_MARK, self.BROKEN_HTML)
+        self.assertNotIn(W.NO_RESULT_MARK,
+                         '<div class="txt-box">…</div>',
+                         "有结果块形态里不该出现这枚标记")
+
 class _NpcResp:
     """够用的 NPC 响应替身：HTTP 永远 200，业务状态只活在 JSON 里。"""
 

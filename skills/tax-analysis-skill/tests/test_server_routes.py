@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Flask 服务端路由用例。全部打桩上游，不联网。
 
-tax_server.py 是前端唯一的后端，25 个路由注册（`/api/calc` 的 GET 与 POST 各一条）
+tax_server.py 是前端唯一的后端，26 个路由注册（`/api/calc` 的 GET 与 POST 各一条）
 需要接口级测试钉住契约——
 只靠联网 e2e 间接碰到它时，e2e 失败说不清是"路由写错了"还是
 "对方限流了"。这一组把路由自己的契约钉住：
@@ -1447,6 +1447,88 @@ class TestCaseRoute(_RouteCase):
             r = self.client.post("/api/cases", json={"topic": "骗取出口退税"})
         self.assertEqual(502, r.status_code)
         self.assertIn("timed out", r.get_json()["error"])
+
+
+class TestPaperRoute(_RouteCase):
+    """数字报独立取数口：两分支互斥、版面号取值域、参数原样透传给引擎。
+
+    这一源不在聚合六源名单里（标题去重会把同稿异题的两条错并成一条），所以
+    它只有这一条独立入口。分支互斥要钉住：date 与 keyword 都给时旧形状会两边
+    都跑一遍，一天八版面 × 几十枚文章页的请求就是这么白发出去的。
+    """
+
+    def test_date_branch_goes_to_fetch_edition(self):
+        with mock.patch.object(tax_server.tax_paper, "fetch_edition",
+                               return_value={"articles": []}) as m:
+            r = self.client.post("/api/paper", json={"date": "2026-11-24",
+                                                     "edition": 3})
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(("2026-11-24",), m.call_args[0])
+        self.assertEqual(3, m.call_args.kwargs["edition"])
+
+    def test_keyword_branch_passes_the_whole_request(self):
+        with mock.patch.object(tax_server.tax_paper, "search_paper",
+                               return_value={"results": []}) as m:
+            r = self.client.post("/api/paper", json={
+                "keyword": "虚开", "editions": ["5", "6", "6", " 7"],
+                "days": 4, "size": 3,
+                "date_from": "2026-11-20", "date_to": "2026-11-24"})
+        self.assertEqual(200, r.status_code)
+        self.assertEqual(("虚开",), m.call_args[0])
+        self.assertEqual((5, 6, 7), m.call_args.kwargs["editions"])
+        self.assertEqual((4, 3), (m.call_args.kwargs["days"],
+                                  m.call_args.kwargs["size"]))
+        self.assertEqual("2026-11-20", m.call_args.kwargs["date_from"])
+        self.assertEqual("2026-11-24", m.call_args.kwargs["date_to"])
+
+    def test_keyword_without_editions_uses_the_single_edition(self):
+        with mock.patch.object(tax_server.tax_paper, "search_paper",
+                               return_value={}) as m:
+            self.client.post("/api/paper", json={"keyword": "虚开", "edition": 2})
+        self.assertEqual((2,), m.call_args.kwargs["editions"])
+
+    def test_date_and_keyword_are_mutually_exclusive(self):
+        for body in ({"date": "2026-11-24", "keyword": "虚开"}, {}):
+            with self.subTest(body=body):
+                with mock.patch.object(tax_server.tax_paper,
+                                       "fetch_edition") as f1, \
+                        mock.patch.object(tax_server.tax_paper,
+                                          "search_paper") as f2:
+                    r = self.client.post("/api/paper", json=body)
+                self.assertEqual(400, r.status_code)
+                self.assertIn("二选一", r.get_json()["error"])
+                f1.assert_not_called()
+                f2.assert_not_called()
+
+    def test_edition_out_of_domain_is_400_before_any_fetch(self):
+        for bad in (0, 9, "六"):
+            with self.subTest(edition=bad):
+                with mock.patch.object(tax_server.tax_paper,
+                                       "fetch_edition") as f:
+                    r = self.client.post("/api/paper",
+                                         json={"date": "2026-11-24",
+                                               "edition": bad})
+                self.assertEqual(400, r.status_code)
+                f.assert_not_called()
+
+    def test_editions_list_members_are_checked(self):
+        for bad in (["99"], ["x"], ["10"]):
+            with self.subTest(editions=bad):
+                with mock.patch.object(tax_server.tax_paper,
+                                       "search_paper") as f:
+                    r = self.client.post("/api/paper",
+                                         json={"keyword": "虚开",
+                                               "editions": bad})
+                self.assertEqual(400, r.status_code)
+                self.assertIn("editions", r.get_json()["error"])
+                f.assert_not_called()
+
+    def test_upstream_failure_is_502(self):
+        with mock.patch.object(tax_server.tax_paper, "fetch_edition",
+                               side_effect=RuntimeError("connection reset")):
+            r = self.client.post("/api/paper", json={"date": "2026-11-24"})
+        self.assertEqual(502, r.status_code)
+        self.assertIn("connection reset", r.get_json()["error"])
 
 
 class TestInspectionToolRoutes(_RouteCase):

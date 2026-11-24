@@ -644,6 +644,7 @@ table.calc-tiers td{padding:2px 6px}
       <button type="button" class="on" data-wb="analysis" onclick="wbTab('analysis')">分析主线</button>
       <button type="button" data-wb="cases" onclick="wbTab('cases')">类案</button>
       <button type="button" data-wb="law" onclick="wbTab('law')">法规</button>
+      <button type="button" data-wb="paper" onclick="wbTab('paper')">报纸</button>
       <button type="button" data-wb="tools" onclick="wbTab('tools')">检查工具</button>
       <button type="button" data-wb="templates" onclick="wbTab('templates')">输出模板</button>
     </div>
@@ -710,6 +711,38 @@ table.calc-tiers td{padding:2px 6px}
         <button type="button" class="wb-btn primary" onclick="wbLawRelated(this)">相关网页</button>
       </div>
       <div class="wb-out" id="wbLawOut"></div>
+    </div>
+
+    <div class="wb-pane" id="wbPaper">
+      <p class="wb-hint">中国税务报·网络报（数字报）发真实请求。这一站没有站内检索接口，关键词那一路是逐日扫版面再本地比文——回溯天数与版面数越多越慢。栏目名逐日漂移，别指望税案稿总在第 6 版。这一源不参与多源聚合（同一篇稿在本报与中国税网常用两副标题，按标题去重会把两条错并成一条）。</p>
+      <label class="wb-label" for="wbPaperMode">查法
+        <select id="wbPaperMode" onchange="wbPaperPick(this.value)">
+          <option value="date">看某一天的一版</option>
+          <option value="keyword">按关键词扫一段时间</option>
+        </select>
+      </label>
+      <div id="wbPaperDateFields">
+        <label class="wb-label" for="wbPaperDate">报纸日期（2026-11-24）</label>
+        <input type="text" id="wbPaperDate" placeholder="周四、周六、周日不出报，会回「当天没出报」">
+        <label class="wb-label" for="wbPaperEdition">版面号（1–8）</label>
+        <input type="number" id="wbPaperEdition" min="1" max="8" value="6">
+      </div>
+      <div id="wbPaperWordFields" style="display:none">
+        <label class="wb-label" for="wbPaperKeyword">关键词（标题或正文里字面出现即命中）</label>
+        <input type="text" id="wbPaperKeyword" placeholder="例如：虚开">
+        <div class="wb-grid">
+          <label class="wb-label" for="wbPaperFrom">起日（可空）<input type="text" id="wbPaperFrom" placeholder="2026-11-20"></label>
+          <label class="wb-label" for="wbPaperTo">止日（可空）<input type="text" id="wbPaperTo" placeholder="2026-11-24"></label>
+          <label class="wb-label" for="wbPaperDays">回溯天数（1–30，给了起日止日就不看它）<input type="number" id="wbPaperDays" min="1" max="30" value="10"></label>
+          <label class="wb-label" for="wbPaperSize">最多几篇（1–30）<input type="number" id="wbPaperSize" min="1" max="30" value="6"></label>
+        </div>
+        <label class="wb-label" for="wbPaperEditions">扫哪几个版面（逗号分隔，留空=只扫上面那个版面号）</label>
+        <input type="text" id="wbPaperEditions" placeholder="全版面填 1,2,3,4,5,6,7,8">
+      </div>
+      <div class="wb-row">
+        <button type="button" class="wb-btn primary" onclick="wbPaper(this)">取数字报</button>
+      </div>
+      <div class="wb-out" id="wbPaperOut"></div>
     </div>
 
     <div class="wb-pane" id="wbTools">
@@ -1443,6 +1476,70 @@ function wbRenderCases(out,r){
     r.limitations.length+' 条）</summary><ul>'+r.limitations.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></details>';
   h+=wbRaw(r);
   out.innerHTML=h;
+}
+
+function wbPaperPick(name){
+  const isDate=name!=='keyword';
+  document.getElementById('wbPaperDateFields').style.display=isDate?'':'none';
+  document.getElementById('wbPaperWordFields').style.display=isDate?'none':'';
+}
+
+function wbPaper(btn){
+  const mode=document.getElementById('wbPaperMode').value;
+  if(mode!=='keyword'){
+    const d=document.getElementById('wbPaperDate').value.trim();
+    if(!d)return wbWarn('wbPaperOut','先填报纸日期，或切到「按关键词扫一段时间」');
+    const payload={date:d,edition:Number(document.getElementById('wbPaperEdition').value||6)};
+    wbRun(btn,'wbPaperOut','取数字报当天那一版…','/api/paper',payload,wbRenderPaper);
+    return;
+  }
+  const kw=document.getElementById('wbPaperKeyword').value.trim();
+  if(!kw)return wbWarn('wbPaperOut','这一站没有站内检索，关键词不能空');
+  const payload={keyword:kw,
+    days:Number(document.getElementById('wbPaperDays').value||10),
+    size:Number(document.getElementById('wbPaperSize').value||6)};
+  const from=document.getElementById('wbPaperFrom').value.trim();
+  const to=document.getElementById('wbPaperTo').value.trim();
+  if(from)payload.date_from=from;
+  if(to)payload.date_to=to;
+  const eds=document.getElementById('wbPaperEditions').value.split(/[,，、;;\s]+/)
+    .map(s=>s.trim()).filter(Boolean);
+  if(eds.length)payload.editions=eds;
+  wbRun(btn,'wbPaperOut','扫版面取稿（可能要几十秒）…','/api/paper',payload,wbRenderPaper);
+}
+
+function wbRenderPaper(out,r){
+  if(r.date&&r.edition!==undefined&&!r.results){
+    let h='<h4>'+esc(r.date||'')+' 第'+esc(String(r.edition||''))+'版 '+esc(r.edition_name||'')+'</h4>';
+    if(r._status)h+='<div class="wb-err">'+esc(r._status)+'</div>';
+    const list=r.articles||[];
+    h+='<div class="wb-k">取到 '+list.length+' 篇 · 打了 '+esc(String(r.network||0))+' 次站'+
+       (r._from_cache?' · 这一趟是六小时内的缓存':'')+'</div>';
+    if(list.length){
+      h+='<table><tr><th>#</th><th>标题</th><th>正文</th></tr>';
+      h+=list.map((x,i)=>'<tr><td>'+(i+1)+'</td><td>'+wbLink(x.url,x.title)+
+        '<div class="wb-k">'+esc(x.source||'')+(x._image_piece?' · 图片稿（正文是图注）':'')+
+        '</div></td><td>'+esc((x.content||'').slice(0,160))+
+        ((x.content||'').length>160?'…':'')+'</td></tr>').join('')+'</table>';
+    }
+    out.innerHTML=h+wbRaw(r);
+    return;
+  }
+  const list=r.results||[];
+  let h='<h4>数字报命中 '+list.length+' 篇</h4>';
+  if(r._note)h+='<div class="wb-k">'+esc(r._note)+'</div>';
+  if(r._status)h+='<div class="wb-err">'+esc(r._status)+'</div>';
+  if(list.length){
+    h+='<table><tr><th>#</th><th>标题</th><th>日期 / 版面</th></tr>';
+    h+=list.map((x,i)=>'<tr><td>'+(i+1)+'</td><td>'+wbLink(x.url,x.title)+
+      '<div class="wb-k">'+esc((x.content||'').slice(0,120))+
+      ((x.content||'').length>120?'…':'')+'</div></td><td>'+
+      esc([x.date,'第'+(x._edition||'')+'版：'+(x._edition_name||'')].filter(Boolean).join(' · '))+
+      '</td></tr>').join('')+'</table>';
+  }else{
+    h+='<div class="wb-k">这些天这些版面里没有命中的稿子。没命中不等于报上没有——看上面扫了哪几个版面、有没有取数失败的日子。</div>';
+  }
+  out.innerHTML=h+wbRaw(r);
 }
 
 function wbLink(url,title){

@@ -158,6 +158,17 @@ AI 直接调用网页同款后端接口完成取数，再用自动化打开页�
      下，改完原样回传）；`POST /api/reconcile`（`document`＋`confirmed`／`dims`）；
      `POST /api/controls`（`diagnosis` 可直收 `/api/inspection` 的整份输出；无诊断又
      无假设时 400，并回吐取诊断的两条命令）。
+   - 数字报这一路单独联网，且**不在六源聚合里**：`POST /api/paper`（`date` 与 `keyword`
+     二选一，两个都给或都不给直接 400——两个分支都跑会白发一次"一天八版面几十篇文章页"的
+     扫描；`edition` 1–8、`editions` 可重复（逐项过 1–8 值域，越界在任何取数之前 400）、
+     `days` 1–30、`size` 1–30、`date_from`／`date_to`）。`date` 那一路回 `articles`／
+     `edition_name`／`network`／`_status`／`_from_cache`；`keyword` 那一路回 `results`／
+     `total`（**恒为 `null`**：这一站没有可用的站内检索接口，靠逐日扫版面再本地比文，
+     拿不到库里总数，写成条数会让上层把命中数当总数）／`_days_scanned`／`_no_issue_days`／
+     `_failed_days`／`_editions`。`_status` 四档互不冒充：空（整版取全）、`no-issue`（当天
+     没出报——周四／周六／周日整站 404，是出版日历不是失败）、`partial`（点名哪几篇没取到，
+     这一档不落缓存）、`failed`（版面页本身没取到）。空命中只说明"扫过的日子与版面里没有"，
+     界面文案固定写这一句，不写"报上没有"。
 2. **开浏览器呈现**：AI 启动服务并用自动化打开 `http://localhost:5080`，
    把搜索结果 / 法规弹窗呈现给用户。
 3. **代点智能引导面板（可选）**：若用户要走向导，AI 用自动化依次点选

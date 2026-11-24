@@ -35,6 +35,7 @@ import tax_inspect
 import tax_intake
 import tax_ledger
 import tax_llm
+import tax_paper
 
 from flask import Flask, request, jsonify, send_from_directory
 import urllib3
@@ -1144,6 +1145,54 @@ def api_cases():
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": "类案检索失败：" + tax_http.short_reason(e)}), 502
+
+
+@app.route("/api/paper", methods=["POST"])
+def api_paper():
+    """中国税务报·网络报（数字报）：按日期取一天一版，或按关键词扫近 N 天。
+
+    这一路不在聚合的六源名单里：聚合层按标题三元 Jaccard 去重，而数字报与
+    中国税网对同一篇稿子常用两副标题（全题 vs 半题），进了聚合就会被错并。
+    所以它是独立取数口——一天一版走 /api/paper 的 date 分支，关键词走
+    keyword 分支；两个分支互斥，都给或都不给就 400。站点没有站内检索，
+    keyword 分支靠逐日扫版面再本地比文，天越多越慢（默认 10 天）。
+    """
+    try:
+        data = _json_body()
+        keyword = _text_field(data, "keyword", required=False)
+        date = _text_field(data, "date", required=False)
+        edition = _int_param(data, "edition", 6, 1, 8)
+        raw_eds = _list_field(data, "editions")
+        days = _int_param(data, "days", 10, 1, 30)
+        size = _int_param(data, "size", 6, 1, 30)
+        date_from = _text_field(data, "date_from", required=False)
+        date_to = _text_field(data, "date_to", required=False)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if bool(keyword) == bool(date):
+        return jsonify({"error": "keyword 与 date 二选一：看一天一版给 date，"
+                                 "按关键词扫近 N 天给 keyword"}), 400
+    # editions 给了就按给的那几版扫（数字报名义 8 版，栏目名逐日漂移，
+    # 只扫第 6 版会漏掉别版上的税案稿）；没给沿用 edition 那一枚。
+    eds = []
+    for x in raw_eds:
+        if not re.fullmatch(r"\d{1,2}", x):
+            return jsonify({"error": "editions 里每一项都要是 1~8 的数字，收到 %r" % (x,)}), 400
+        if not 1 <= int(x) <= 8:
+            return jsonify({"error": "editions 只认 1~8 的版面号，收到 %r" % (x,)}), 400
+        if int(x) not in eds:
+            eds.append(int(x))
+    try:
+        if date:
+            return jsonify(tax_paper.fetch_edition(date, edition=edition))
+        return jsonify(tax_paper.search_paper(keyword, days=days, size=size,
+                                              editions=tuple(eds or [edition]),
+                                              date_from=date_from,
+                                              date_to=date_to))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": "数字报送数失败：" + tax_http.short_reason(e)}), 502
 
 
 @app.route("/api/ledger", methods=["POST"])

@@ -96,6 +96,8 @@ OFFLINE_GROUP = [
      [PY, str(TESTS_DIR / "test_download_reason.py")]),
     ("离线守卫（连接器真拦得住、点名定位路自带桩）",
      [PY, str(TESTS_DIR / "test_offline_guard.py")]),
+    ("数字报第七源（版面抽取/四档状态/缓存键与复用）",
+     [PY, str(TESTS_DIR / "test_paper_source.py")]),
     ("服务端路由用例（25 路由/状态码/打桩上游）", [PY, str(TESTS_DIR / "test_server_routes.py")]),
     ("日期区间用例（NPC 复核/只给单端/聚合下推与窗口内补筛/400/前端承接）",
      [PY, str(TESTS_DIR / "test_date_window.py")]),

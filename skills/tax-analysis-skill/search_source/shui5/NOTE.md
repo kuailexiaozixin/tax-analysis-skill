@@ -2,7 +2,7 @@
 
 本文件记的是**本机当日打出来的数**，不是站点的通用属性。税屋的 WAF 会改算法、
 栏目会改目录名、表单的 `tempid` 会换，所以每条都要带着复测工具看：
-`subskills/shui5/probe_shui5.py`。数字对不上时以探针当日输出为准，改这张表。
+`search_source/shui5/probe_shui5.py`。数字对不上时以探针当日输出为准，改这张表。
 
 复测记录：2026-10-18 一整天分轮量过。探针完整轮跑四次（`--no-browser` 轮另跑一次），
 下面记的是最后一轮与前几轮一致的那些读数；之后按主题补轮——站内检索的过滤参数边界、
@@ -336,7 +336,7 @@
 
 取数路径只依赖两样：`requests`（在母技能 `requirements.txt` 里）与仓库内的
 `scripts/tax_browser.py`——后者驱动本机已装浏览器过一次 WAF，不下载任何浏览器内核，
-也不调模型。复测一律走 `subskills/shui5/probe_shui5.py`：它引的就是发货代码里的
+也不调模型。复测一律走 `search_source/shui5/probe_shui5.py`：它引的就是发货代码里的
 `search_native`、`classid_of`、`resolve_column`、`tags_of`、`_read_page`、`_col_control`、
 `_COL_PAGE_LINK_RE`、`TAG_RESULT`、`_search_rows`、`_ARC_RE`、`_own_pages`、`SEARCH_FIELDS`
 与两条提示页文案，所以探针报出来的就是 `tax_shui5` 看到的，判据不重写第二份。

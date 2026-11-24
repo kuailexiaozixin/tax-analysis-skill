@@ -16,5 +16,5 @@ gh skill install kuailexiaozixin/tax-analysis-skill tax-analysis-skill --pin v3.
 
 ## 结构
 
-- `skills/tax-analysis-skill/` — 技能本体：`SKILL.md`、`subskills/`（9 个子技能）、`scripts/`、`references/`、`tests/`
+- `skills/tax-analysis-skill/` — 技能本体：`SKILL.md`、`search_source/`（11 个搜索源子技能）、`subskills/`（2 个业务专题，不是搜索源）、`scripts/`、`references/`、`tests/`
 - `README.md`、`SKILL.md`（技能根） — 仓库与版本的说明入口见技能内文件

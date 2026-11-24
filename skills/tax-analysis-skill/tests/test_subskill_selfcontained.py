@@ -3,7 +3,7 @@
 
 这一层守的是五件事，全都不问内容对错，只问"这一份文档单独拿出去还站不站得住"：
 
-  1. **两份文档齐全**：每个 `subskills/<名>/` 都有 `SKILL.md` 与 `NOTE.md`，且
+  1. **两份文档齐全**：每个子技能目录都有 `SKILL.md` 与 `NOTE.md`，且
      `SKILL.md` 里有 `## 工作流` 那一节。只留一份的目录，读者拿到的是命令清单
      而没有做事的顺序；工作流被改名，母技能那句"照子技能那一节走"就落空。
      `chenyiwei-bbs` 是上游镜像件（须与站点字节一致，见它自己的 NOTE.md「收录来源」），
@@ -11,26 +11,29 @@
   2. **不引用主技能的私有编号**：主技能 `SKILL.md` 那条分析主线有 13 步（①–⑬），
      所以子技能文档里 ⑤ 及以上的圈号只可能是"回 ⑦ 定级""进 ⑧"这种指针——一旦
      子技能被单独分发，收的人手上没有那 13 步，编号就指不到东西。文内自数的
-     枚举允许，实测本轮 subskills 里的圈号最大到 ④（chinatax/NOTE.md 的三条与四条
+     枚举允许，实测本轮两个根的语料里圈号最大到 ④（chinatax/NOTE.md 的三条与四条
      读法、R&D-Expenses 的三条能力线）；要自数到第五项就改用 `1.` 的阿拉伯
      数字列表。
   3. **路径指针存在**：文档里 `references/…`、`scripts/…`、`tests/…`、`frontend/…`、
-     `subskills/…`、`eval/…` 那 134 处指针（本轮实测口径见下面"计数"），先按子技能
+     `search_source/…`、`subskills/…`、`eval/…` 那 173 处指针（2026-11-24 本轮实测口径
+     见下面"计数"），先按子技能
      目录解、再按仓库根解。R&D-Expenses 有自己的 `references/`，母技能那一份
      在仓库根，两套都算落地；写成 `scripts/tax_browser.BrowserSession` 那种带符号名
      后缀的形态，去掉尾段再试；带 `*` 的按 glob 至少命中一个。
-  4. **「第X步／第X节」指针落地**：53 处（本轮实测）逐个解到真实标记。这个仓库里
+  4. **「第X步／第X节」指针落地**：77 处（2026-11-24 本轮实测）逐个解到真实标记。这个仓库里
      两套编号各有唯一形态——步只在 `SKILL.md` 里以 `**第X步 …**` 定义，节只在
      `NOTE.md` 与 `references/*.md` 里以 `## 一、…` 或 `## 第X节` 定义。指针的目标
      先取紧邻前 40 字里最后一个 `.md` 文件名（`NOTE.md`／`SKILL.md` 裸名指向同目录
      那份，前面写着母技能／主技能则指向仓库根 `SKILL.md`），取不到就在本文与同目录
      另一份里找。标题行与 `**第X步` 定义本身不算指针。
-  5. **代码符号可核对**：文档里 66 处 `` `tax_模块.符号` `` 反引号引用，import 得到
+  5. **代码符号可核对**：文档里 73 处 `` `tax_模块.符号` `` 反引号引用，import 得到
      该模块且模块有该属性。子技能说"值域常量在 `tax_web_search.FILE_LABELS`"而那个
      名字已漂走，读者按图索骥会扑空，而这句话在文档里读起来完全正常。
 
-计数口径（2026-10-20 本轮扫）：语料 = `subskills/*/*.md` 共 18 份（9 个目录 × 2 份）；
-路径指针 134 处、符号引用 66 处、编号指针 53 处（排除标题行与步定义行后）。
+计数口径（2026-11-24 本轮重扫；上一轮是 2026-10-20，语料只有 `subskills/*/*.md` 18 份、
+路径 134／符号 66／编号 53）：语料 = `search_source/*/*.md` + `subskills/*/*.md` 共 25 份
+（13 个目录：11 个搜索源目录各 2 份、R&D-Expenses 只 1 份 SKILL.md、tax-preference 2 份）；
+路径指针 173 处、符号引用 73 处、编号指针 77 处（排除标题行与步定义行后）。
 这三枚数在本文件里各有一条用例下限盯着，检查规则一旦漏抓（正则被改窄、语料被改空）
 就会报红，而不是安静地少查。
 
@@ -48,7 +51,13 @@ from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
 ROOT = TESTS_DIR.parent
+# 3.62.24 起这一层查两个根：search_source/ 是按搜索源分的（十一源各一份），
+# subskills/ 只剩业务专题（R&D-Expenses、tax-preference）。分开放是因为两者回答的
+# 问题不同——一个说"去哪取数"，一个说"这类业务怎么办"；混在 subskills 里时，
+# 读者分不清 ctaxnews 与 tax-preference 是同一类东西。
+SEARCH_SOURCE = ROOT / "search_source"
 SUBSKILLS = ROOT / "subskills"
+DOC_ROOTS = (SEARCH_SOURCE, SUBSKILLS)
 
 # 上游镜像件：结构与措辞由站点定，第 1 项（工作流小节）对它豁免
 MIRROR_DOCS = {"chenyiwei-bbs"}
@@ -60,12 +69,12 @@ CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯"
 LOCAL_CIRCLED_MAX = 4            # 文内自数只到 ④；⑤ 起算主技能私有编号
 NUM = "一二三四五六七八九十"
 
-PATH_RE = re.compile(r"(?:references|scripts|tests|frontend|subskills|eval)"
+PATH_RE = re.compile(r"(?:references|scripts|tests|frontend|search_source|subskills|eval)"
                      r"/[A-Za-z0-9_./*-]+[A-Za-z0-9_./*-]")
 SYM_RE = re.compile(r"`(tax_[a-z_]+)\.([A-Za-z_][A-Za-z0-9_]*)`")
 SEC_RE = re.compile(r"第([" + NUM + r"]+)(步|节)")
-MD_RE = re.compile(r"(?:references|tests|frontend|subskills|eval)/[A-Za-z0-9_./*-]+\.md"
-                   r"|(?:NOTE|SKILL)\.md")
+MD_RE = re.compile(r"(?:references|tests|frontend|search_source|subskills|eval)/"
+                   r"[A-Za-z0-9_./*-]+\.md|(?:NOTE|SKILL)\.md")
 KNOWN_EXT = (".py", ".md", ".html", ".json", ".js", ".txt", ".csv", ".yaml", ".yml")
 
 MIN_PATH_POINTERS = 100
@@ -74,7 +83,24 @@ MIN_SECTION_POINTERS = 40
 
 
 def docs():
-    return sorted(SUBSKILLS.glob("*/*.md"))
+    """两个根下的全部文档：search_source/*/*.md + subskills/*/*.md。"""
+    return sorted(p for base in DOC_ROOTS for p in base.glob("*/*.md"))
+
+
+def subskill_dirs():
+    return [p for base in DOC_ROOTS for p in sorted(base.iterdir()) if p.is_dir()]
+
+
+def doc_dir(name):
+    """按目录名找它现在住在哪个根下（迁移过的在 search_source，专题的在 subskills）。
+
+    写死一个根的话，哪天再把某源挪回去，用例只会报"目录不存在"这种与病因无关的红。
+    """
+    for base in DOC_ROOTS:
+        q = base / name
+        if q.is_dir():
+            return q
+    raise AssertionError("两个根下都没有 %s/" % name)
 
 
 def line_no(text, idx):
@@ -101,8 +127,8 @@ def bundle_gaps(dirs, skill_texts):
 
 class TestBundleComplete(unittest.TestCase):
     def test_every_subskill_has_both_docs_and_a_workflow(self):
-        dirs = [p for p in SUBSKILLS.iterdir() if p.is_dir()]
-        self.assertTrue(dirs, "subskills/ 下一个目录都没有，语料空了")
+        dirs = subskill_dirs()
+        self.assertTrue(dirs, "两个根下一个目录都没有，语料空了")
         texts = {}
         for d in dirs:
             f = d / "SKILL.md"
@@ -110,7 +136,7 @@ class TestBundleComplete(unittest.TestCase):
         self.assertEqual(bundle_gaps(dirs, texts), [])
 
     def test_mutation_workflow_heading_renamed_is_caught(self):
-        dirs = [p for p in SUBSKILLS.iterdir() if p.is_dir()]
+        dirs = subskill_dirs()
         victim = next(d for d in dirs if d.name not in MIRROR_DOCS)
         t = (victim / "SKILL.md").read_text(encoding="utf-8").replace(
             "## 工作流", "## 做事顺序", 1)
@@ -124,7 +150,7 @@ class TestBundleComplete(unittest.TestCase):
         self.assertIn("chenyiwei-bbs", MIRROR_DOCS)
         self.assertLessEqual(len(MIRROR_DOCS), 2)
         for name in MIRROR_DOCS:
-            self.assertTrue((SUBSKILLS / name / "SKILL.md").exists())
+            self.assertTrue((doc_dir(name) / "SKILL.md").exists())
 
 
 # ── 2 不引用主技能私有编号 ───────────────────────────────────
@@ -151,7 +177,7 @@ class TestNoParentStepNumbers(unittest.TestCase):
         self.assertGreaterEqual(used, 10, f"语料里 ①–④ 只有 {used} 处，规则可能已空转")
 
     def test_mutation_parent_step_pointer_is_caught(self):
-        p = SUBSKILLS / "chinatax" / "SKILL.md"
+        p = doc_dir("chinatax") / "SKILL.md"
         text = p.read_text(encoding="utf-8")
         anchor = "定级层按 `status`／`effect_level` 归档"
         self.assertIn(anchor, text, "注入点不在这份文档里，先改注入锚")
@@ -215,19 +241,19 @@ class TestPathPointers(unittest.TestCase):
     def test_local_references_directory_counts_as_resolved(self):
         """R&D-Expenses 自带 references/，指针先按子技能目录解——这条钉住
         两解法的优先级，否则删掉本地那份会被读成断链。"""
-        sdir = SUBSKILLS / "R&D-Expenses"
+        sdir = doc_dir("R&D-Expenses")
         self.assertTrue((sdir / "references").is_dir())
         self.assertTrue(path_resolves("references/rd-mgmt-methodology.md", sdir))
 
     def test_mutation_bogus_script_name_is_caught(self):
-        broken = [("subskills/chinatax/SKILL.md", SUBSKILLS / "chinatax",
+        broken = [("search_source/chinatax/SKILL.md", doc_dir("chinatax"),
                    "入口在 `scripts/tax_web_searchx.py`")]
         gaps = path_gaps(broken)
         self.assertEqual([g[2] for g in gaps], ["scripts/tax_web_searchx.py"],
                          "拼错的脚本名没被查出来")
 
     def test_mutation_dropped_local_reference_file_is_caught(self):
-        sdir = SUBSKILLS / "R&D-Expenses"
+        sdir = doc_dir("R&D-Expenses")
         real = path_resolves("references/rd-mgmt-methodology.md", sdir)
         ghost = path_resolves("references/rd-mgmt-methodologx.md", sdir)
         self.assertTrue(real)
@@ -324,10 +350,10 @@ class TestSectionPointers(unittest.TestCase):
     def test_mutation_renumbered_note_section_is_caught(self):
         """注入锚选被指针指到的那一节。`chinatax/SKILL.md` 里指 NOTE 的是「第三节」
         与「第四节」，「第二节」没人指——改它报不出红，只能证明用例在查一件不存在的事。"""
-        p = SUBSKILLS / "chinatax" / "NOTE.md"
-        skill = SUBSKILLS / "chinatax" / "SKILL.md"
-        pairs = [("subskills/chinatax/SKILL.md", skill, skill.read_text(encoding="utf-8")),
-                 ("subskills/chinatax/NOTE.md", p, p.read_text(encoding="utf-8"))]
+        p = doc_dir("chinatax") / "NOTE.md"
+        skill = doc_dir("chinatax") / "SKILL.md"
+        pairs = [("search_source/chinatax/SKILL.md", skill, skill.read_text(encoding="utf-8")),
+                 ("search_source/chinatax/NOTE.md", p, p.read_text(encoding="utf-8"))]
         self.assertEqual(section_gaps(pairs), [], "对照：未破坏时这一路本来全落地")
         anchor = "## 三、search5 的值域"
         self.assertIn(anchor, p.read_text(encoding="utf-8"), "注入点不在 NOTE 里，先改注入锚")
@@ -337,15 +363,15 @@ class TestSectionPointers(unittest.TestCase):
         self.assertTrue(hit, "NOTE 那节的序号改了名，SKILL 里指它的「第三节」却没报红")
 
     def test_mutation_renamed_step_marker_is_caught(self):
-        p = SUBSKILLS / "npc-flk" / "SKILL.md"
+        p = doc_dir("npc-flk") / "SKILL.md"
         text = p.read_text(encoding="utf-8")
         self.assertIn("**第四步 分类编号", text, "注入点不在这份文档里，先改注入锚")
         broken = text.replace("**第四步 分类编号", "**丁四步 分类编号", 1)
-        pairs = [("subskills/npc-flk/SKILL.md", p, broken)]
+        pairs = [("search_source/npc-flk/SKILL.md", p, broken)]
         gaps = section_gaps(pairs, overrides={p: broken})
         self.assertTrue(any(g[2] == "第四步" for g in gaps),
                         f"步定义改名之后指它的「第四步」没被报红：{gaps}")
-        self.assertEqual(section_gaps([("subskills/npc-flk/SKILL.md", p, text)]), [],
+        self.assertEqual(section_gaps([("search_source/npc-flk/SKILL.md", p, text)]), [],
                          "对照：原文这一路本来全落地")
 
 
@@ -389,13 +415,13 @@ class TestSymbolRefs(unittest.TestCase):
         self.assertEqual(symbol_gaps(self.pairs, self.modules), [])
 
     def test_missing_module_is_a_gap_not_a_skip(self):
-        broken = [("subskills/npc-flk/SKILL.md", "见 `tax_npc_flk.search_npc`")]
+        broken = [("search_source/npc-flk/SKILL.md", "见 `tax_npc_flk.search_npc`")]
         self.assertEqual([g[2] for g in symbol_gaps(broken, {"tax_npc_flk": None})],
                          ["`tax_npc_flk.search_npc`"], "取不到的模块被放过了")
 
     def test_mutation_renamed_symbol_is_caught(self):
-        pairs = [(str((SUBSKILLS / "chinatax" / "SKILL.md").relative_to(ROOT)),
-                  (SUBSKILLS / "chinatax" / "SKILL.md").read_text(encoding="utf-8"))]
+        doc = doc_dir("chinatax") / "SKILL.md"
+        pairs = [(doc.relative_to(ROOT).as_posix(), doc.read_text(encoding="utf-8"))]
         self.assertEqual(symbol_gaps(pairs, self.modules), [], "对照：原文本来全落地")
         text = pairs[0][1].replace("`tax_web_search.search_chinatax`",
                                    "`tax_web_search.search_chinatax_v2`", 1)

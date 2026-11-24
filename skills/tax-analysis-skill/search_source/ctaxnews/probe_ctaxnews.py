@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-中国税网（www.ctaxnews.com.cn）站点体检 — 把 `subskills/ctaxnews/SKILL.md` 与 `NOTE.md`
+中国税网（www.ctaxnews.com.cn）站点体检 — 把 `search_source/ctaxnews/SKILL.md` 与 `NOTE.md`
 里那些带日期的实测数字变成一条命令。
 
 为什么需要它：这一站的可用面全长在外网上——`Search.do` 的参数值域、检索行的 15 枚键、
@@ -17,10 +17,10 @@
 第 6 项凑政策页，第 7 项自己取老行尾段。单跑某一项时缺上游缓存的，会就地补一次检索。
 
 Usage:
-  python subskills/ctaxnews/probe_ctaxnews.py                    # 全项
-  python subskills/ctaxnews/probe_ctaxnews.py --fast             # 不重建栏目表
-  python subskills/ctaxnews/probe_ctaxnews.py --items 2,4,7      # 只跑指定项
-  python subskills/ctaxnews/probe_ctaxnews.py --keyword 留抵退税 # 换位置参数那一项用的词
+  python search_source/ctaxnews/probe_ctaxnews.py                    # 全项
+  python search_source/ctaxnews/probe_ctaxnews.py --fast             # 不重建栏目表
+  python search_source/ctaxnews/probe_ctaxnews.py --items 2,4,7      # 只跑指定项
+  python search_source/ctaxnews/probe_ctaxnews.py --keyword 留抵退税 # 换位置参数那一项用的词
 """
 
 import argparse

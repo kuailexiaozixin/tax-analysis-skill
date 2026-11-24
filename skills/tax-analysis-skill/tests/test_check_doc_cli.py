@@ -86,6 +86,30 @@ class TestOrphanFlagGroups(unittest.TestCase):
         self.assertEqual(self.check(text), [])
 
 
+class TestDocCoverage(unittest.TestCase):
+    """DOCS 清单本身也要钉：3.62.24 起子技能散在两根，漏一根就是那一根的
+    命令行脱离这道尺——而漏的那根若恰好没有坏参数，脚本自己永远是绿的。
+    注入证伪（把 DOCS 收成只扫一根）在上一轮就是没被抓住的假绿，这条补上。"""
+
+    def test_both_roots_are_represented(self):
+        got_sub = sum(1 for d in cdc.DOCS if d.startswith("search_source/"))
+        got_biz = sum(1 for d in cdc.DOCS if d.startswith("subskills/"))
+        want_sub = sum(1 for _ in cdc.SOURCE_DIR.glob("*/SKILL.md"))
+        want_biz = sum(1 for _ in cdc.SUBSKILLS_DIR.glob("*/SKILL.md"))
+        self.assertGreater(want_sub, 0, "search_source/ 下一份 SKILL.md 都没有？")
+        self.assertGreater(want_biz, 0, "subskills/ 下一份 SKILL.md 都没有？")
+        self.assertEqual(got_sub, want_sub,
+                         "DOCS 收进的 search_source 份数与目录实际份数不符")
+        self.assertEqual(got_biz, want_biz,
+                         "DOCS 收进的 subskills 份数与目录实际份数不符")
+
+    def test_every_listed_doc_exists(self):
+        """清单里的路径必须都落得下脚——哪天目录再搬家，这条先红，
+        而不是让脚本静默少扫一片文档。"""
+        missing = [d for d in cdc.DOCS if not (cdc.PROJECT_ROOT / d).is_file()]
+        self.assertEqual(missing, [], "DOCS 里这些路径不存在：%s" % missing)
+
+
 if __name__ == "__main__":
     for _s in (sys.stdout, sys.stderr):
         try:

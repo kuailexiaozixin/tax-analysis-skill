@@ -58,14 +58,14 @@
 
 **这一层分三个子技能，按要的东西选**：
 
-- 要**规范逐条原文全文**（某准则/指引第 X 条到底怎么写的）→ `subskills/maodocs/`
+- 要**规范逐条原文全文**（某准则/指引第 X 条到底怎么写的）→ `search_source/maodocs/`
   （纯标准库直连 docs.maoyanqing.com 静态站，覆盖企业/政府/小企业会计准则、注协审计准则、
   企业内控规范、资产评估准则、证监会监管规则适用指引五域，无 WAF、不调模型）。
-- 要**实务答疑 / 监管处罚案例 / 某准则衍生哪些问答** → `subskills/chenyiwei-bbs/`
+- 要**实务答疑 / 监管处罚案例 / 某准则衍生哪些问答** → `search_source/chenyiwei-bbs/`
   （公开 REST，匿名访问，不调模型；它也能附带给企业准则原文，但取原文优先走 maodocs，
   静态、可复现、不吃第三方接口）。
 - 要**证券交易场所自律规则、或某部门规章/规范性文件在交易所官网的原文定位** →
-  `subskills/szse-lawrules/`（www.szse.cn/www/lawrules，先 `build` 建本地索引再离线
+  `search_source/szse-lawrules/`（www.szse.cn/www/lawrules，先 `build` 建本地索引再离线
   `query`；法律/行政法规/司法解释/证监会规章·指引·规范性文件/废止公告走标准库直连，
   十二类"本所业务规则"走浏览器渲染，都不调模型）。
 
@@ -93,24 +93,24 @@ curl -s "https://bbs.auditdog.cn/api/public/ref/cas-33"
 curl -s "https://bbs.auditdog.cn/api/public/ref-posts?slug=cas-33"
 ```
 
-maodocs 两条命令（脚本在 `subskills/maodocs/maodocs.py`，纯标准库）：
+maodocs 两条命令（脚本在 `search_source/maodocs/maodocs.py`，纯标准库）：
 
 ```bash
 # 1) 在某个分类里按关键词找条目：输出 results[].href / url
-python subskills/maodocs/maodocs.py search cas "长期股权投资"   # 会计/审计/内控/评估/证券别名见 categories
+python search_source/maodocs/maodocs.py search cas "长期股权投资"   # 会计/审计/内控/评估/证券别名见 categories
 # 2) 取逐条原文（含发文机关/日期/文号/正文）
-python subskills/maodocs/maodocs.py fetch "https://docs.maoyanqing.com/accounting/ent/cas/02.html"
+python search_source/maodocs/maodocs.py fetch "https://docs.maoyanqing.com/accounting/ent/cas/02.html"
 ```
 
-szse-lawrules 三条命令（脚本在 `subskills/szse-lawrules/szse.py`；先 `build` 建索引，之后离线 `query`）：
+szse-lawrules 三条命令（脚本在 `search_source/szse-lawrules/szse.py`；先 `build` 建索引，之后离线 `query`）：
 
 ```bash
 # 1) 建本地索引（默认只走标准库可枚举的七类通道，约 724 条；--snapshot 并入落地页快照）
-python subskills/szse-lawrules/szse.py build --snapshot
+python search_source/szse-lawrules/szse.py build --snapshot
 # 2) 离线按关键词查，命中给"规则名+发布日期+原文链接+所属分类"
-python subskills/szse-lawrules/szse.py query 回购 --limit 10
+python search_source/szse-lawrules/szse.py query 回购 --limit 10
 # 3) 取某一条原文（HTML 直连取正文；PDF/DOC 附件只回链接）
-python subskills/szse-lawrules/szse.py fetch "http://www.szse.cn/lawrules/rule/trade/current/t20260424_620190.html"
+python search_source/szse-lawrules/szse.py fetch "http://www.szse.cn/lawrules/rule/trade/current/t20260424_620190.html"
 # 需要"本所业务规则"（股票/债券/基金…）那一类时补浏览器渲染：python …szse.py build --browser --channel stock
 ```
 
@@ -175,11 +175,11 @@ python subskills/tax-preference/preference.py list-types
 内容一旦进了定级表，就会被当作税收依据来打分。
 
 chenyiwei 的其余接口差异（`recent?days=1` 可以整天空、`penalties` 的分页字段是字符串、
-`slug` 命名不带统一年份后缀）记在 `subskills/chenyiwei-bbs/NOTE.md`，那份文件与上游字节
+`slug` 命名不带统一年份后缀）记在 `search_source/chenyiwei-bbs/NOTE.md`，那份文件与上游字节
 一致，改动都只写在 NOTE.md 里；maodocs 的站内实测差异（索引页混挂全局导航、小企业准则
-不按主题分篇、Git Bash 路径改写）记在 `subskills/maodocs/NOTE.md`；szse 的站内实测差异
+不按主题分篇、Git Bash 路径改写）记在 `search_source/maodocs/NOTE.md`；szse 的站内实测差异
 （业务规则页运行时模板需浏览器、规范性文件多为 PDF/DOC 附件、偶发 502 重试、t 编号不表
-版次）记在 `subskills/szse-lawrules/NOTE.md`。
+版次）记在 `search_source/szse-lawrules/NOTE.md`。
 
 ## 立法过程文件：草案那一层也不在 L1–L4 之内
 

@@ -131,9 +131,9 @@ python scripts/tax_ctax.py --find-doc "财政部 税务总局公告2026年第29�
 python scripts/tax_ctax.py --list 税案通报 --pages 2     # 不检索，按栏目列表页取清单（交回 0 行不等于这一栏没内容）
 python scripts/tax_ctax.py --columns                                # 打印本地栏目表，不发请求
 python scripts/tax_ctax.py --update-columns                         # 重建栏目表（逐栏目空词计数，声明 102 次＝当期一轮实发，随站点节点数与父栏目数浮动）
-python subskills/ctaxnews/probe_ctaxnews.py                         # 全项复测（声明 209 次请求，第 6、7、8、10、12 项按站点当期读数浮动）
-python subskills/ctaxnews/probe_ctaxnews.py --fast                  # 同上但不重建栏目表（107 次）
-python subskills/ctaxnews/probe_ctaxnews.py --items 3,5 --keyword 留抵退税   # 只跑值域与栏目两档
+python search_source/ctaxnews/probe_ctaxnews.py                         # 全项复测（声明 209 次请求，第 6、7、8、10、12 项按站点当期读数浮动）
+python search_source/ctaxnews/probe_ctaxnews.py --fast                  # 同上但不重建栏目表（107 次）
+python search_source/ctaxnews/probe_ctaxnews.py --items 3,5 --keyword 留抵退税   # 只跑值域与栏目两档
 ```
 
 命令行与函数同一份判据。`--channel 0` 在本层等于不提交这一枚，拿到的是网站与触屏的并集；

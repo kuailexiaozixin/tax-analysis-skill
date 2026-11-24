@@ -177,7 +177,7 @@ python -c "import requests,json;r=requests.get('https://flk.npc.gov.cn/law-searc
 2. **不给 `total` 当命中总数**。它随 `pageSize`、`pageNum` 换值（第二步），要"到底有多少条"得逐档重发或
    换用日期区间收口，报数时说明读的是哪一档。
 3. **不给整库全量**：这一站是按词召回的开放接口，翻页取回的是窗口，不是封闭清单。
-4. **不给总局与地方口径**。规范性文件、公告、文字解读在国家税务总局那一站（`subskills/chinatax/`），
+4. **不给总局与地方口径**。规范性文件、公告、文字解读在国家税务总局那一站（`search_source/chinatax/`），
    地方口径不在这一路。这一层给的只有国家法律与行政法规这一层级的文本。
 5. **不给时效判定**。`sxx` 是录入值，一次一档；不带 `--status` 取到的是「现行有效」而不是全部，
    这条最容易读反。判定在 `tax_evidence.judge_validity`，观察时点要显式 `--at` 传入。

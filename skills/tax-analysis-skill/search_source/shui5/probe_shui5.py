@@ -19,11 +19,11 @@
      栏目表与页面是否同源、标签页 `&page=` 还翻不翻得动。
 
 Usage:
-  python subskills/shui5/probe_shui5.py                       # 全项体检
-  python subskills/shui5/probe_shui5.py --no-browser           # 只跑不需要放行的挑战面
-  python subskills/shui5/probe_shui5.py --keyword 留抵退税 --column ShiWuJiDu
-  python subskills/shui5/probe_shui5.py --column 北京 --column2 深圳   # 换逗号多选那两栏
-  python subskills/shui5/probe_shui5.py --tag 增值税法                 # 指名复测标签翻页
+  python search_source/shui5/probe_shui5.py                       # 全项体检
+  python search_source/shui5/probe_shui5.py --no-browser           # 只跑不需要放行的挑战面
+  python search_source/shui5/probe_shui5.py --keyword 留抵退税 --column ShiWuJiDu
+  python search_source/shui5/probe_shui5.py --column 北京 --column2 深圳   # 换逗号多选那两栏
+  python search_source/shui5/probe_shui5.py --tag 增值税法                 # 指名复测标签翻页
 """
 
 import argparse

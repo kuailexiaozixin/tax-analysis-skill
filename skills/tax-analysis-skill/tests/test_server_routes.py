@@ -347,7 +347,7 @@ class TestSearchRoute(_RouteCase):
 
         用例故意发 NPC 那侧的"现行有效"：search5 认的是"全文有效"，两套值域不通用。
         发错时接口不发错误码，回的是 `total=0`——与"这一维真的没有内容"是同一个形态
-        （单发读数见 subskills/chinatax/NOTE.md 第三节）。界面只会显示 0 条，看不出
+        （单发读数见 search_source/chinatax/NOTE.md 第三节）。界面只会显示 0 条，看不出
         是值域写错还是库里就这么多，所以原因必须在 400 这一层报出来。
         """
         with mock.patch.object(tax_server, "search_chinatax") as m:
@@ -670,7 +670,7 @@ class TestSearchRoute(_RouteCase):
                              intent="policy_lookup").get_json()
             miss = self._post({"keyword": "小规模纳税人季度销售额30万元免征增值税吗"},
                               tax_type=None, intent="policy_lookup").get_json()
-        self.assertIn("subskills/chenyiwei-bbs", hit["accounting_note"])
+        self.assertIn("search_source/chenyiwei-bbs", hit["accounting_note"])
         self.assertEqual("", miss["accounting_note"])
 
     def test_legislative_note_survives_the_keyword_swap(self):

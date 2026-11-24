@@ -50,7 +50,7 @@ fgk 域的详情页给正文与注释、www 域的 `getFileListByCodeId` 给整�
   「企业重组」实测 `pageNum=0` 与 `pageNum=1` 各回 10 条、URL 交集为空，且 0 那一组才是相关度最高的
   一页；发 1 等于整轮检索永远丢掉首屏。命中不足 10 条时（如「企业重组业务所得税处理」共 3 条）
   首屏是唯一一页，丢掉它取回的是空清单，上层会读成"库里没有这份文件"。
-  NPC 法规库那一路的 `pageNum` 从 1 起（`subskills/npc-flk/`），两边基准不同，不要照抄。
+  NPC 法规库那一路的 `pageNum` 从 1 起（`search_source/npc-flk/`），两边基准不同，不要照抄。
 - `pageSize` **卡在 10**。同一发法把 `pageSize` 换成 10／20／60／100，`total` 一个不换、取回行数都是 10、
   首行都是同一条。所以 `search_chinatax` 里那枚 `max(size, 10)` 只在 `size < 10` 时起作用，
   `size > 10` 取回的还是 10 行，想要更多条只能翻页。flk 那一路相反——`pageSize` 照请求给行

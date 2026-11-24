@@ -9,9 +9,14 @@ __pycache__/
 *.log
 tests/results/
 
-# 子技能 build 生成的本地索引（可再生，随技能分发不含）
+# 子技能 build 生成的本地索引（可再生，随技能分发不含）。
+# 3.62.24 站点子技能搬进 search_source/，这两组规则必须两根都写：只写一根时，
+# 搬过去那根的索引就不再被忽略，git status 里冒出一枚未跟踪的大 json，
+# 而它随时可能被顺手 add 进仓（可再生产物入库 = 分发时人人有一份过期的）。
 subskills/*/szse_index.json
+search_source/*/szse_index.json
 subskills/*/preference_index.json
+search_source/*/preference_index.json
 
 # 同步器下载到的原始产物与 state（可再生，含版本节点每次变的直链）
 data/sync/
@@ -26,4 +31,6 @@ data/eval/tax_eval_set.jsonl
 # 本地改动前的工作副本备份（可再生，不随技能分发）
 subskills/*_backup_*/
 subskills/*_bk_*/
+search_source/*_backup_*/
+search_source/*_bk_*/
 

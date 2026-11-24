@@ -38,14 +38,18 @@ PROJECT_ROOT = TESTS_DIR.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 REFERENCES_DIR = PROJECT_ROOT / "references"
 SUBSKILLS_DIR = PROJECT_ROOT / "subskills"
+SOURCE_DIR = PROJECT_ROOT / "search_source"
+# 3.62.24 起站点子技能搬进 search_source/，subskills/ 只剩业务专题。
+# 命令契约覆盖两根，漏一根就是"那一根的命令行脱离这道尺"。
+DOC_ROOTS = (SOURCE_DIR, SUBSKILLS_DIR)
 # 主线 SKILL.md + README.md，加上从 SKILL.md 搬出命令全文的 references/。
 # 命令搬进参考文件后，"文档用了、代码没有"这道契约必须跟着走，否则搬一次就脱管一次。
 # 站点子技能的 SKILL.md 也写命令行，同一道契约覆盖它们；NOTE.md 是读数台账、不写命令，不收。
-DOCS = ("SKILL.md", "README.md") + tuple(
-    f"references/{p.name}" for p in sorted(REFERENCES_DIR.glob("*.md"))
-) + tuple(
-    f"subskills/{p.parent.name}/{p.name}" for p in sorted(SUBSKILLS_DIR.glob("*/SKILL.md"))
-)
+DOCS = (("SKILL.md", "README.md")
+        + tuple("references/%s" % p.name for p in sorted(REFERENCES_DIR.glob("*.md")))
+        + tuple("%s/%s/%s" % (base.name, p.parent.name, p.name)
+                for base in DOC_ROOTS
+                for p in sorted(base.glob("*/SKILL.md"))))
 
 # 文档里形如  scripts/xxx.py "关键词" --flag 的命令；取到文件名与其后的同行文本
 _CMD_RE = re.compile(r"scripts/([A-Za-z0-9_]+\.py)([^\n`]*)")

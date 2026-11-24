@@ -28,7 +28,7 @@
 按 `r.text` 再编码落盘 33,255 字节——响应头不带 charset 时 requests 先按 ISO-8859-1 解出
 1:1 的字符，再按 utf-8 写盘，中文各占 3 字节就把尺寸虚增了 4,049 字节。凡比对"两份响应是否逐字节相同"，
 比的都是 content。
-复测入口：`python subskills/ctaxnews/probe_ctaxnews.py`（全项 209 次请求，`--fast` 跳过栏目表重建那项后 107 次，逐项见「探针项与请求数」）。
+复测入口：`python search_source/ctaxnews/probe_ctaxnews.py`（全项 209 次请求，`--fast` 跳过栏目表重建那项后 107 次，逐项见「探针项与请求数」）。
 
 ## 站点底座与两个落点
 

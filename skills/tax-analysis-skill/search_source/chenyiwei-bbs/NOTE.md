@@ -15,7 +15,7 @@
 | 服务基址 | `https://bbs.auditdog.cn`，匿名可访问，无需 token 与 API Key |
 | 依赖 | `curl` 与 HTTPS 出站；不调用任何模型，不消费任何模型额度 |
 
-**同步方式**：`curl -o subskills/chenyiwei-bbs/SKILL.md https://bbs.auditdog.cn/chenyiwei-skill/SKILL.md`
+**同步方式**：`curl -o search_source/chenyiwei-bbs/SKILL.md https://bbs.auditdog.cn/chenyiwei-skill/SKILL.md`
 后与本文件的 SHA-256 比对；对不上说明上游改过，要重读一遍下面"实测校正"是否仍然成立。
 
 **为什么不改编上游文件**：它同时是可以被 Claude Code / Codex / Cursor 直接安装的独立

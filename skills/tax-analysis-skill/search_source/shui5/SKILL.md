@@ -151,10 +151,10 @@ python scripts/tax_shui5.py --tag 增值税法 --pages 2                  # 不�
 python scripts/tax_shui5.py --columns                               # 打印栏目表，不发请求
 python scripts/tax_shui5.py --update-columns                        # 重建栏目表（48 个请求，约 150 秒）
 python scripts/tax_browser.py --check                                 # 探测本机已装浏览器，不下载内核
-python subskills/shui5/probe_shui5.py                                 # 全量复测（十项，约 30 个请求）
-python subskills/shui5/probe_shui5.py --no-browser                     # 只跑不需要放行的挑战面
-python subskills/shui5/probe_shui5.py --keyword 留抵退税 --column ShuiWuChouHua
-python subskills/shui5/probe_shui5.py --tag 增值税法                    # 指名复测标签翻页
+python search_source/shui5/probe_shui5.py                                 # 全量复测（十项，约 30 个请求）
+python search_source/shui5/probe_shui5.py --no-browser                     # 只跑不需要放行的挑战面
+python search_source/shui5/probe_shui5.py --keyword 留抵退税 --column ShuiWuChouHua
+python search_source/shui5/probe_shui5.py --tag 增值税法                    # 指名复测标签翻页
 ```
 
 `probe_shui5.py` 十项覆盖挑战面、凭据与寿命、两条检索通道与两路首屏的交集、栏目地图与

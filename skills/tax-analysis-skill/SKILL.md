@@ -1,7 +1,7 @@
 ---
 name: tax-analysis-skill
 description: "税务问题分析引擎：先判定问题类型与缺失前提，再从上位法逐层向下检索到行政法规、地方口径与实务案例，多源聚合后按规范层级、时效与角色给每条依据定级（三根轴各判各的，不折算成分数），最后输出带限制条件的分析结论。适用于一切涉及税与费的问题——某个税怎么算、能不能享受优惠、该按什么税目归类、怎么办理、多久之内办、有什么风险、两个方案选哪个，以及法规原文的条款填空与选项判断、政策与案例检索。回答前一律实时联网核查，不使用训练数据中的政策记忆。"
-version: "3.62.23"
+version: "3.62.24"
 ---
 
 # 税务问题分析引擎 (Tax Analysis Engine)
@@ -22,7 +22,7 @@ version: "3.62.23"
 | 用户点名要查询/阅读/解读某一份文件 | ③ 末 | `references/out_of_library_layers.md` |
 | 题面把会计/审计/内控/评估/证券口径写进要件 | ③ 末 | `references/out_of_library_layers.md`，取证走子技能 |
 | 决定六源怎么聚合、缺一个漏什么 | ④ | — |
-| 查具体命令、看某个源失败了怎么办 | ⑤ | `references/commands.md`（六源）；六源之外那四路的命令在 `references/out_of_library_layers.md`；正文取到的是哪一种状态（`body_status` 四态）、这一轮发过几次请求（`_attempts`）判在 ⑤；官方法规原文那三站怎么把命中收窄到某一维、为什么回 0 条，总局站点与总局法规库在 `subskills/chinatax/`、NPC 法规库在 `subskills/npc-flk/` |
+| 查具体命令、看某个源失败了怎么办 | ⑤ | `references/commands.md`（六源）；六源之外那四路的命令在 `references/out_of_library_layers.md`；正文取到的是哪一种状态（`body_status` 四态）、这一轮发过几次请求（`_attempts`）判在 ⑤；官方法规原文那三站怎么把命中收窄到某一维、为什么回 0 条，总局站点与总局法规库在 `search_source/chinatax/`、NPC 法规库在 `search_source/npc-flk/` |
 | 写最终回答（六段式/逐条比对/填空/条件矩阵/风险自检） | ⑥ | `references/output_templates.md` |
 | 判定某项优惠能否享受、多项能否同享 | ⑥ + ⑦ 第 22 条 | `references/output_templates.md`「资格判定条件矩阵式」 |
 | liability 题要出数 | ⑥ 前 | `scripts/tax_calc.py`（算式展开器；税率与扣除标准由 ③ 检回后当参数喂进） |
@@ -38,7 +38,7 @@ version: "3.62.23"
 | 判断一条依据在答案里顶哪一层、要提醒什么（层级、时效、角色） | ⑧ | `references/evidence_grading.md` |
 | 查税种/专题对应的检索词与依据源 | ⑨ | `references/tax_categories.md` |
 | 想知道源缺陷由哪段代码保证、还剩哪些边界 | ⑩ | `references/source_defects.md` |
-| 了解各数据源性质与覆盖 | ⑪ | 本节表格只到"这一源给什么、接主线哪一步"；边界登记在 `references/source_defects.md`「由代码保证的源缺陷」，不在 L1–L4 的那三层及其子技能选路在 `references/out_of_library_layers.md`，各站自己的取数机制在对应 `subskills/<站>/` |
+| 了解各数据源性质与覆盖 | ⑪ | 本节表格只到"这一源给什么、接主线哪一步"；边界登记在 `references/source_defects.md`「由代码保证的源缺陷」，不在 L1–L4 的那三层及其子技能选路在 `references/out_of_library_layers.md`，各站自己的取数机制在 `search_source/<站>/`（3.62.24 起站点子技能在这一根，`subskills/` 只留业务专题） |
 | 启动网页界面做可视化呈现 | ⑫ | `references/web_interface.md` |
 | 跑评测、看指标含义与判读标准 | ⑬ | `references/evaluation.md` |
 
@@ -55,7 +55,7 @@ python tests/run_all.py                                        # 离线门禁，
 `--from`+`--to`／`--scope`，chinatax 与 fgk 共用的那七组收窄维度开关（逐组列在「search5 收窄维度的命令行」
 那一节，另有 `--order` 与 `--all-labels` 两项检索选项），fgk 的 `--body`／`--pages`／`--assoc`，以及 `--cache`（fgk 的清单缓存只存清单完整的那一轮——请求失败、中途断供、改走文号直达的轮次都不落盘，盘上若有旧版本写的这类残缺也不会被回放；「翻完若干页一条法规库条目都没筛出」是完整答案，照常缓存）。
 这三站的参数在站点上到底怎么走、为什么回 0 条、条数为什么和界面不一样，属站点层细节，
-判据在 `subskills/chinatax/SKILL.md`（总局站点与总局法规库）与 `subskills/npc-flk/SKILL.md`（NPC），
+判据在 `search_source/chinatax/SKILL.md`（总局站点与总局法规库）与 `search_source/npc-flk/SKILL.md`（NPC），
 逐项读数与取样口径在同两个目录的 `NOTE.md`。
 改完代码先跑离线门禁，联网 e2e 用 `--online` 追加。跑测试不必担心写脏用户缓存：
 所有缓存落点认 `TAX_CACHE_DIR` 这枚环境变量，测试侧（`tests/conftest.py`、门禁
@@ -194,7 +194,8 @@ python tests/probe_classify.py --stats --real --oracle    # 判型体检（离�
 上的口径在下层的实施条例、公告、办税指南与实务案例里。每层的具体命令、翻页与缓存
 参数、NPC 串行闸在 `references/commands.md`；此处只给判据。L1/L2 那三站（NPC 法规库、
 总局站点、总局法规库）自己的取数机制——翻页基准为什么两站相反、收窄条件给越界值为什么
-回 0 条、清单层与正文层为什么各装一半——在 `subskills/chinatax/` 与 `subskills/npc-flk/`，本站不重复。
+回 0 条、清单层与正文层为什么各装一半——在 `search_source/chinatax/`、`search_source/npc-flk/`
+与 `search_source/fgk/`，本站不重复。
 
 【⑦ 第 2 条正文】**禁止只查上位法就作答**：必须完成 ③ 的 L1→L3 逐层下挖，资格认定、
 计算标准、风险定性、争议类问题必须走到 L4。
@@ -212,12 +213,17 @@ python tests/probe_classify.py --stats --real --oracle    # 判型体检（离�
   是前置不是失败）；答案引这一栏的条数时，把 `stats` 给出的官方栏目页直链附上让读者自查。
   它不在 ④ 的六源聚合里，取的条目回 ⑧ 按同一根轴定级。
 - **L3 地方口径**：省局与地方文件只在 搜狗手机端站内搜索里，用 `--site <省>.chinatax.gov.cn`。
+  这一路的反爬判据（反爬页回的是 200 不是 4xx，认的是最终地址上的记号）、预算与熔断为什么
+  按 600 秒 4 次设，在 `search_source/sogou/`；命令仍走 ④ 的 `sogou` 源。
 - **L4 实务案例与解读（必做）**：税屋 + 公众号取正文，把抽象规定落到用户情形上；
   这一层给的是执行口径（角色 `practice`），照常进答案并参与论证，但不能顶替被它
   解读的那份文件当依据（见 ⑧）。税屋这个站有两条检索通道（搜狗的 `site:shui5.cn`
   与站内原生检索；搜狗被反爬时自动换站内，站内每行带日期、摘要与栏目），取数细节（没凭据时同一个地址回的是另一份
   页面、长文按本篇 ID 跟 `$N` 续页读到末页、取不到正文时先分清是没凭据还是站点上没
-  这篇）在 `subskills/shui5/`，命令仍走 ④ 的 `shui5` 源，不必为它单开一步。
+  这篇）在 `search_source/shui5/`，命令仍走 ④ 的 `shui5` 源，不必为它单开一步。
+  同一层的**微信公众号**那一路是「搜狗微信检索 → 还原直链 → 取正文」三段：还原靠检索
+  那次的会话 cookie，所以检索与还原必须共用一个 Session；三段各自的判据、节奏与那条
+  「从未取过阈值」的边界在 `search_source/wechat/`，命令仍走 ④ 的 `wechat` 源。
   同一层还有**中国税网**（中国税务报社的媒体站）：`scripts/tax_ctax.py` 直连它的开放 JSON
   检索，不要凭据、不启浏览器，可按栏目、发布区间、只匹配标题限定，也能只有一枚文号时回站内
   找它登的那几篇。什么时候用它：要**税案通报、地方税收法规的报刊报道与解读、报社视角的执行
@@ -226,10 +232,10 @@ python tests/probe_classify.py --stats --real --oracle    # 判型体检（离�
   依据，而且定级那一步不会自动把它标成实务层（`tax_evidence.rank_of` 按标题形态先、来源兜底，
   `PRACTICE_SOURCES` 里没有这一站，转载件会按原文件的位阶计），所以依据链里的 url 要写官方那份；
   2023-02 之前的行只有题录（标题、日期、文号、机关都在检索行里，正文取不到）。
-  站点判据与复测在 `subskills/ctaxnews/`；这一路是 ④ 默认名单里的第 6 源
+  站点判据与复测在 `search_source/ctaxnews/`；这一路是 ④ 默认名单里的第 6 源
   （源键 `ctax`），日期按**发布日期**下推到服务端。聚合回的是题录与摘要，
   要正文单发 `tax_ctax.py --read`。
-  同一报社交付的还有一台**数字报**（`www.ctaxnews.net.cn`，`scripts/tax_paper.py`）：当天版面的原文，走 `POST /api/paper` 或命令行取，**不在默认名单里**——它与上面那台是两座站、同一篇稿常用两副标题，进了聚合会被按标题错并；这一站没有可用的站内检索，关键词那一路是逐日扫版面再本地比文，所以「没命中」只说明扫过的日子与版面里没有。取数边界与四档状态见 `references/web_interface.md`。
+  同一报社交付的还有一台**数字报**（`www.ctaxnews.net.cn`，`scripts/tax_paper.py`）：当天版面的原文，走 `POST /api/paper` 或命令行取，**不在默认名单里**——它与上面那台是两座站、同一篇稿常用两副标题，进了聚合会被按标题错并；这一站没有可用的站内检索，关键词那一路是逐日扫版面再本地比文，所以「没命中」只说明扫过的日子与版面里没有。取数边界与四档状态见 `references/web_interface.md`，逐条实测读数、为什么只能扫版面、以及与第六源的重叠裁定在 `search_source/netpaper/`。
 
 **分轮编排**由 `tax_answer.build_plan` 按题型给出轮次模板与候选词；`build_plan`
 会按 ⑨ 判出的 `authority` 换源（sta 专题第 1 轮直接查总局法规库；overseas 专题第 1 轮
@@ -261,15 +267,15 @@ AND：税屋按整串匹配（拼串多半 0 条），总局 search5 按任一�
   "召回的都是字面引用"（该待核）是三句不同的话，不得压成一句。
 - **专业口径缺口**（`tax_analyze.accounting_gap` 认出"税法借用会计结果"这一路；审计/
   内控/评估/证券口径的原文则按题面直接判，不由词表触发）：按要的东西三选一——要**规范逐条
-  原文**走 `subskills/maodocs/`，要**实务答疑/处罚案例/准则衍生问答**走
-  `subskills/chenyiwei-bbs/`，要**证券交易场所自律规则与原文定位**走
-  `subskills/szse-lawrules/`；三个都不进六源、不进 ⑧ 定级，引原文只引"规范名＋条款号"。
+  原文**走 `search_source/maodocs/`，要**实务答疑/处罚案例/准则衍生问答**走
+  `search_source/chenyiwei-bbs/`，要**证券交易场所自律规则与原文定位**走
+  `search_source/szse-lawrules/`；三个都不进六源、不进 ⑧ 定级，引原文只引"规范名＋条款号"。
   选路判据、各子技能命令与"接口编号不当版次用""标注不替时效判定"两条硬规矩，见
   `references/out_of_library_layers.md`「专业口径缺口：准则那一层不在 L1–L4 之内」。
   【⑦ 第 21 条正文】**禁止用训练数据里的准则记忆补专业口径缺口**：会计/审计/内控/评估/证券的准则与
   指引、证券交易场所的业务规则都在修订，接口 `docNo`、URL 里的 t 编号、页面"现行有效"
-  标注都不跟着修订走；缺口只能靠 `subskills/maodocs/`（原文）、`subskills/chenyiwei-bbs/`
-  （实务答疑）或 `subskills/szse-lawrules/`（交易所自律规则目录与原文定位）实时取，取到再引。
+  标注都不跟着修订走；缺口只能靠 `search_source/maodocs/`（原文）、`search_source/chenyiwei-bbs/`
+  （实务答疑）或 `search_source/szse-lawrules/`（交易所自律规则目录与原文定位）实时取，取到再引。
 - **优惠封闭枚举**（`entitlement`/`liability` 题型要"某税种/某主体名下有哪些现行优惠"）：
   关键词召回只会带回单份文件，凑不出一个去重、带官方减免性质代码的优惠全集。走
   `subskills/tax-preference/`（先 `sync` 重建索引，再离线 `query`/`list-types` 按税种·大类·
@@ -330,8 +336,8 @@ python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax --size 10 
 
 六源的命令全文、参数、NPC 跨进程串行闸（`NpcSerialGate` / `TAX_NPC_LOCK_TIMEOUT`）、
 各源失败表现与处理对照表在 `references/commands.md`。③ 末选到的那四路不在六源里，命令
-写在 `references/out_of_library_layers.md` 对应小节（`subskills/maodocs/`、
-`subskills/chenyiwei-bbs/`、`subskills/szse-lawrules/`、`subskills/tax-preference/`），
+写在 `references/out_of_library_layers.md` 对应小节（`search_source/maodocs/`、
+`search_source/chenyiwei-bbs/`、`search_source/szse-lawrules/`、`subskills/tax-preference/`），
 它们"没取到"与"取到了但读不得"（编号与文号都不证明版次）那些形态在本节不复述，
 记在所属目录的 `SKILL.md` 边界小节与 `NOTE.md` 台账里。此处只留五条硬规矩：
 
@@ -349,7 +355,7 @@ python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax --size 10 
   `tax_evidence.has_body_in_attachment`，读的是 `attachments` 与 `oss_files` 两格）为真时
   要给附件名与直链——随文的税率表、纳税申报表常常只在附件里，人大库那份条例的正文
   就只在 docx 与 pdf 里（这一栏的实测与边界登记在 `references/source_defects.md`，
-  清单层与正文层各装哪一半见 `subskills/chinatax/` 第四步），只说"正文没有表"是把
+  清单层与正文层各装哪一半见 `search_source/chinatax/` 第四步），只说"正文没有表"是把
   取得到的东西说成取不到。但这一格只回答"带没带附件"：有附件不等于正文就在附件里，
   要连着 `body_status` 一起看。
 - **空清单有两种成因**（`_empty_reason`：翻页越界 vs 这一轮没取到清单），都不等于
@@ -630,17 +636,17 @@ repealed**；「财税文件」栏不录时效时靠**制定依据援引**补这
 
 | 数据源 | 覆盖范围 | 权威度 | 实时性 | 访问方式 |
 |--------|---------|--------|--------|---------|
-| NPC 国家法规库 | 法律、行政法规、地方法规、司法解释。**不收**国际税收专题与税收征管细则 | ⭐⭐⭐⭐⭐ | 实时 | API（`POST /law-search/search/list`）。`total` 会随 `pageSize`／`pageNum` 换值不能当命中数，分类编号只认叶节点、两棵树有 22 枚编号撞号，机制见 `subskills/npc-flk/` |
-| chinatax.gov.cn | 部门规章、公告、政策解读、操作指南。**检索分两层**：默认只发十类文件类标签，`--all-labels` 关掉标签取全站层——`authority="overseas"` 那一类只能在全站层取到条目（见 ⑨） | ⭐⭐⭐⭐ | 实时 | search5 JSON API（每页固定 10 条）。收窄维度给越界值回的是 0 条而不是错误码，成文日期只给裸日期时改的是集合不是区间，值域与逐发读数见 `subskills/chinatax/` |
-| fgk 法规库 | 税务总局法规目录与正文。国际税收、转让定价、税务行政处罚依据都在这 | ⭐⭐⭐⭐ | 实时 | search5 JSON API 翻页 + 详情页。正文里的税率表与执行期限只在详情页、随文申报表只在清单层的附件链接里，两层的分工见 `subskills/chinatax/` |
+| NPC 国家法规库 | 法律、行政法规、地方法规、司法解释。**不收**国际税收专题与税收征管细则 | ⭐⭐⭐⭐⭐ | 实时 | API（`POST /law-search/search/list`）。`total` 会随 `pageSize`／`pageNum` 换值不能当命中数，分类编号只认叶节点、两棵树有 22 枚编号撞号，机制见 `search_source/npc-flk/` |
+| chinatax.gov.cn | 部门规章、公告、政策解读、操作指南。**检索分两层**：默认只发十类文件类标签，`--all-labels` 关掉标签取全站层——`authority="overseas"` 那一类只能在全站层取到条目（见 ⑨） | ⭐⭐⭐⭐ | 实时 | search5 JSON API（每页固定 10 条）。收窄维度给越界值回的是 0 条而不是错误码，成文日期只给裸日期时改的是集合不是区间，值域与逐发读数见 `search_source/chinatax/` |
+| fgk 法规库 | 税务总局法规目录与正文。国际税收、转让定价、税务行政处罚依据都在这 | ⭐⭐⭐⭐ | 实时 | search5 JSON API 翻页 + 详情页。正文里的税率表与执行期限只在详情页、随文申报表只在清单层的附件链接里，两层的分工见 `search_source/chinatax/` |
 | 搜狗站内搜索（源键 `sogou`） | 省局子站、地方文件、全网补充 | ⭐⭐⭐ | 实时／30 分钟元数据缓存 | `m.sogou.com` 手机端单页 HTML；size 只截输出，官方解读逐站查询、到期重查，保护与失败分诊见 `references/commands.md` |
-| 税屋 shui5.cn | 实务解读、专栏、答疑。**正文可取，但要凭据**：没有放行 cookie 时首页、文章页、`robots.txt` 与一个不存在的路径返回同一份挑战页，HTTP 都是 200，请求成功不等于取到内容 | ⭐⭐⭐ | 实时 | 两条检索通道（搜狗 `site:shui5.cn` 与站内原生检索，`--channel` 选路；搜狗被反爬或 0 条时 `auto` 换站内）+ 本机浏览器过一次 WAF 后 HTTP 连读；站内那一路另可按栏目、发布日期区间、匹配域限定并取全，栏目/标签可整页取清单（`--update-columns` 重建时某一栏取不到会在表里留一行标了 `_error` 的记录、classid 从上一轮继承并写明来源，`pages/records` 留空，那一栏不能当本轮读数用），手上只有一枚文号时按半角→全角→去机关名三档回站内定位（`--find-doc`）；行标题的站点时效标记与正文开头批注会落进字段，只作定位提醒、不接定级；站点机制（凭据寿命、栏目分页、正文容器与续页、两份提示页）见 `subskills/shui5/` |
-| 中国税网 ctaxnews.com.cn（子技能 ctaxnews） | 中国税务报社站：政策转载、政策解读、税案通报、地方税收法规、报刊专栏。**登载件不是法定依据**，被它登的那份文件才是；定级那一步不替这一路把关（`rank_of` 按标题形态把转载件算成原文件的位阶，`PRACTICE_SOURCES` 里没有这一站），依据链的 url 要自己写官方那份 | 实务解读 ⭐⭐⭐ | 实时 | 开放 JSON `GET /xy/Search.do`，`scripts/tax_ctax.py` 直连：无凭据、不启浏览器、不调模型；可按栏目、发布日期区间、匹配域（`q`/`title`/`keyword`/`author`）限定并翻页取全，手上只有一枚文号时 `--find-doc` 回站内定位并把一稿多栏并成一条；`--list` 不检索按栏目列表页取清单，`--columns` 读本地栏目表（`--update-columns` 重建时会逐枚点名取不到的父栏目并说「这一轮没收全」，表里的行数不是全站数）。**域名后不足四段路径的行只给题录、取不到正文**（2023-02 前的旧地址），只有四段那一批可取全文。站点机制（参数值域、一稿多发、正文双块、老地址形状）见 `subskills/ctaxnews/`；**这一路是 ④ 默认名单里的第 6 源**（源键 `ctax`，日期按发布日期下推到服务端），聚合回的是题录与摘要，要正文单发 `tax_ctax.py --read` |
+| 税屋 shui5.cn | 实务解读、专栏、答疑。**正文可取，但要凭据**：没有放行 cookie 时首页、文章页、`robots.txt` 与一个不存在的路径返回同一份挑战页，HTTP 都是 200，请求成功不等于取到内容 | ⭐⭐⭐ | 实时 | 两条检索通道（搜狗 `site:shui5.cn` 与站内原生检索，`--channel` 选路；搜狗被反爬或 0 条时 `auto` 换站内）+ 本机浏览器过一次 WAF 后 HTTP 连读；站内那一路另可按栏目、发布日期区间、匹配域限定并取全，栏目/标签可整页取清单（`--update-columns` 重建时某一栏取不到会在表里留一行标了 `_error` 的记录、classid 从上一轮继承并写明来源，`pages/records` 留空，那一栏不能当本轮读数用），手上只有一枚文号时按半角→全角→去机关名三档回站内定位（`--find-doc`）；行标题的站点时效标记与正文开头批注会落进字段，只作定位提醒、不接定级；站点机制（凭据寿命、栏目分页、正文容器与续页、两份提示页）见 `search_source/shui5/` |
+| 中国税网 ctaxnews.com.cn（子技能 ctaxnews） | 中国税务报社站：政策转载、政策解读、税案通报、地方税收法规、报刊专栏。**登载件不是法定依据**，被它登的那份文件才是；定级那一步不替这一路把关（`rank_of` 按标题形态把转载件算成原文件的位阶，`PRACTICE_SOURCES` 里没有这一站），依据链的 url 要自己写官方那份 | 实务解读 ⭐⭐⭐ | 实时 | 开放 JSON `GET /xy/Search.do`，`scripts/tax_ctax.py` 直连：无凭据、不启浏览器、不调模型；可按栏目、发布日期区间、匹配域（`q`/`title`/`keyword`/`author`）限定并翻页取全，手上只有一枚文号时 `--find-doc` 回站内定位并把一稿多栏并成一条；`--list` 不检索按栏目列表页取清单，`--columns` 读本地栏目表（`--update-columns` 重建时会逐枚点名取不到的父栏目并说「这一轮没收全」，表里的行数不是全站数）。**域名后不足四段路径的行只给题录、取不到正文**（2023-02 前的旧地址），只有四段那一批可取全文。站点机制（参数值域、一稿多发、正文双块、老地址形状）见 `search_source/ctaxnews/`；**这一路是 ④ 默认名单里的第 6 源**（源键 `ctax`，日期按发布日期下推到服务端），聚合回的是题录与摘要，要正文单发 `tax_ctax.py --read` |
 | 中国税务报网络报（数字报，`scripts/tax_paper.py`） | 中国税务报当日版面全文（税收要闻／税务新闻／税收法治专刊／税案传真等八版，逐日可回溯）。**与上面中国税网那行同社不同站、页面模板不共用**：当天可比 29 枚里同稿仅 6 枚，其余是这一站独占 | 实务报道 ⭐⭐⭐；它登的那份文件仍是回 L2 取的依据 | 当天出版（周四／周六／周日整站不发）；本地六小时缓存 | 版面页 `node_NN.html` 与文章页 `content_NNNNNN.html` 直连（plain HTTP，无凭据、不启浏览器）；**站内检索接口不可用**（TLS 直接被掐），关键词那一路靠逐日扫版面再本地比文 ⇒ 没命中不等于报上没有，且栏目名逐日漂移、按版面号筛会漏。独立取数口 `POST /api/paper`／`python scripts/tax_paper.py`，**不进 ④ 默认名单**（`DEFAULT_SOURCES` 没有它）：同一篇稿在本报与中国税网常用两副标题（全题／半题），聚合层按标题字符三元 Jaccard 去重会把两条不同地址错并成一条；`total` 恒为 `null` 与六源的语义不同；一次扫描是八版面乘几十篇文章页的成本。四档 `_status`（空／`no-issue`／`partial`／`failed`）与抽取细节见 `references/web_interface.md`、`references/source_defects.md` |
 | 微信公众号 | 实务解读、申报实操 | ⭐⭐ | 实时 | 搜狗微信 + 移动 UA |
-| 会计视野论坛（子技能 chenyiwei-bbs） | 陈版主实务答疑、监管处罚案例、准则衍生问答，附带企业会计准则原文。**答会计口径，不是税收规定** | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 按批进库、间隔不固定，取"最近"时窗口可以整段为空（读数见 `subskills/chenyiwei-bbs/NOTE.md`） | 公开 REST API，`curl` 直连，无需 key；见 `subskills/chenyiwei-bbs/` |
-| 审计文库 MaoDocs（子技能 maodocs） | docs.maoyanqing.com 规范原文全文：企业/政府/小企业会计准则、注协审计准则、企业内控规范、资产评估准则、证监会监管规则适用指引。**答专业口径原文，不是税收规定** | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 实时（sitemap lastmod 到 2026-09-28） | 纯标准库直连静态站，无 WAF、无浏览器、无 key；见 `subskills/maodocs/` |
-| 深交所法律规则（子技能 szse-lawrules） | www.szse.cn/www/lawrules 目录：法律/行政法规/司法解释/证监会规章·指引·规范性文件/废止公告（标准库直连可枚举）＋十二类"本所业务规则"自律规则（浏览器渲染）。**答证券交易场所口径与原文定位，不是税收规定** | 专业口径 ⭐⭐⭐；税收依据 无 | 实时（当日枚举 724 条入索引） | 先 `build` 建本地索引再离线 `query`；直连 HTTP，业务规则通道复用 `scripts/tax_browser`，无 key、不调模型；见 `subskills/szse-lawrules/` |
+| 会计视野论坛（子技能 chenyiwei-bbs） | 陈版主实务答疑、监管处罚案例、准则衍生问答，附带企业会计准则原文。**答会计口径，不是税收规定** | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 按批进库、间隔不固定，取"最近"时窗口可以整段为空（读数见 `search_source/chenyiwei-bbs/NOTE.md`） | 公开 REST API，`curl` 直连，无需 key；见 `search_source/chenyiwei-bbs/` |
+| 审计文库 MaoDocs（子技能 maodocs） | docs.maoyanqing.com 规范原文全文：企业/政府/小企业会计准则、注协审计准则、企业内控规范、资产评估准则、证监会监管规则适用指引。**答专业口径原文，不是税收规定** | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 实时（sitemap lastmod 到 2026-09-28） | 纯标准库直连静态站，无 WAF、无浏览器、无 key；见 `search_source/maodocs/` |
+| 深交所法律规则（子技能 szse-lawrules） | www.szse.cn/www/lawrules 目录：法律/行政法规/司法解释/证监会规章·指引·规范性文件/废止公告（标准库直连可枚举）＋十二类"本所业务规则"自律规则（浏览器渲染）。**答证券交易场所口径与原文定位，不是税收规定** | 专业口径 ⭐⭐⭐；税收依据 无 | 实时（当日枚举 724 条入索引） | 先 `build` 建本地索引再离线 `query`；直连 HTTP，业务规则通道复用 `scripts/tax_browser`，无 key、不调模型；见 `search_source/szse-lawrules/` |
 | 减免税政策代码目录（子技能 tax-preference） | 总局《减免税政策代码目录》xlsx：现行有效/已失效两栏、8 位减免性质代码、收入种类·政策大类、文号、优惠条款。**这是税收优惠的权威封闭枚举**——按税种/大类穷举某主体名下有哪些优惠，是六源关键词召回给不出的 | 税收依据 ⭐⭐⭐⭐（带文号，回 ⑧ 定级） | 官方每月定期更新（国家税务总局公告 2015 年第 73 号）；本地 `sync` 抓直链比版本 | 先 `sync` 下载重建 `preference_index.json`，再离线 `query`/`list-types`；plain HTTP，无 key、不调模型；见 `subskills/tax-preference/`。`有效` 栏不录日期、目录只到"项目名＋代码＋文号＋条款"这两条边界，见 `references/out_of_library_layers.md`「优惠封闭枚举：这一层不是专业口径，是税收依据本体」 |
 | 政策文件库清单（`scripts/tax_gov_list.py`） | **与上面 chinatax.gov.cn 那行同站、不同接口**：那行走 search5 按关键词召回，这一行走 getFileListByCodeId 按栏目爬全，两行各自成立不合并。七个栏目（税务规范性文件／财税文件／其他文件／法律／行政法规／国务院文件／税务部门规章）的**封闭分页清单**，每条自带发文字号·效力等级·**官方"时效性"分类状态**·成文日期·税费类型·官方 url。它补的是关键词召回给不出的"这一栏全部现行文件"横截面，也是 ⑧ 时效判定的官方时效字段来源：实测取值只有 全文有效／已修改／全文废止／全文失效／尚未生效 五种，**「财税文件」与「其他文件」两栏官方恒不录时效**（整栏翻到底 0 条真值，是常态不是改版） | 税收依据 ⭐⭐⭐⭐（带官方 url，回 ⑧ 定级） | 集合 diff（`tax_sync.ListSynchronizer` 按 url+时效性+文号+标题算 SHA1，时效性翻转会检出重建） | `sync [--channel 名]` 抓全建 `data/sync/chinatax-list/` 索引，`lookup`/`stats` 离线查，`seed-cache`/`missing` 管文号→官方链接缓存的种入与欠账；plain HTTP POST，无 cookie、不调模型。用在 ③ L2 的"整栏横截面"那一格，**不在 ④ 的六源聚合里**（`tax_aggregator.DEFAULT_SOURCES` 没有它）。整栏条数与时效分布、建库时的元数据缺失计数都查 `stats`；四条已登记的边界（索引只有一份、切栏会强制重建，`"null"` 占位串归一，栏目名与栏目页名两张表各自取值域，`lookup --aging` 域外值在取数前报错）逐条记在 `references/source_defects.md`「由代码保证的源缺陷」 |
 

@@ -56,7 +56,7 @@ python scripts/tax_search.py "<关键词>" --status 1 --size 20
    必须先用 `resolve_tax_type` 归到具体税种/专题，再按税种映射表选词。
 
 `--sort date`、`--from`／`--to`、`--scope fulltext` 这三枚在站点上各有自己的走法，
-逐项读数与取样口径在 `subskills/npc-flk/NOTE.md`「一、NPC（flk）命令行三处细节」，
+逐项读数与取样口径在 `search_source/npc-flk/NOTE.md`「一、NPC（flk）命令行三处细节」，
 这里留判据：
 
 - `--sort date` 的排序在**本地做**：接口收到 `orderByParam={order:-1,sort:gbrq}` 并不真按发文
@@ -119,7 +119,7 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
   定级时优先按它归档，比按标题形态猜准。
 
 默认**按需自适应**：连续 3 页没捞到新的法规库条目就收尾（上限 20 页）。默认检索范围
-已是文件类标签（那十枚就是站点「综合」tab 提交的那一串，见 `subskills/chinatax/SKILL.md`
+已是文件类标签（那十枚就是站点「综合」tab 提交的那一串，见 `search_source/chinatax/SKILL.md`
 第三步），还连着 3 页空手，剩下的只是与检索词沾边的别的文件，硬翻到底只是多花请求。代价是
 **可能漏掉间隔 3 页以上的条目**；若出现 `total` 很少但 `total_hits` 很大的可疑情形，就用
 `--pages N` 显式指定页数——那时会关掉自适应、严格翻满，但翻得越深相关性越差。
@@ -136,20 +136,20 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
 `appendixContent` 取样全为空串，随文的申报表、税率表只在附件里，所以正文没表不等于没有表）、
 表格与执行期限只在正文层（`tax_evidence.expiry_of`／`period_start_of`）、正文是视频或图片的条目
 带 `media_only: true`（这不是取失败，重试也没用；只有真正取失败才进 `body_error`）、`media_urls`
-是正文层字段且只有 `--body` 那一轮才有。判据写在 `subskills/chinatax/SKILL.md` 第四步；
+是正文层字段且只有 `--body` 那一轮才有。判据写在 `search_source/chinatax/SKILL.md` 第四步；
 铺表口径（colspan 补空列、rowspan 把值带到它盖住的每一行、末列恒空的成因、不吞字的逐行复算）
 与逐篇取样读数（三个检索词 16 条里 3 条带附件、两批 75 篇里 8 篇含 `<table>`、5 条 `media_only`
-全部带出素材地址且抽查两个直链回 200）在 `subskills/chinatax/NOTE.md`
+全部带出素材地址且抽查两个直链回 200）在 `search_source/chinatax/NOTE.md`
 「一、法规库清单页与正文的形态」。
 
 ### search5 的单发参数与分面字段：读数在子技能
 
-`search5` 的可发参数、八个分面字段与逐项单发读数都在 `subskills/chinatax/NOTE.md`：
+`search5` 的可发参数、八个分面字段与逐项单发读数都在 `search_source/chinatax/NOTE.md`：
 「二、search5 的可发参数与分面字段」是 2026-10-01、10-02 两批单发实测，「三、search5
 的值域、两族日期与行业键名单发读数（2026-10-20 取样）」按当日基线重发，两批各自的全站与
 文件类标签基数写在表头，**这两档基数随上游录入每天在漂，比对前先重发当日基线**；
 「四、站点自己发的那一串」是 `getSearch.js` 与 `public.js` 两份脚本的逐行读数，键名以那里为准。
-判据收在 `subskills/chinatax/SKILL.md` 第三步。
+判据收在 `search_source/chinatax/SKILL.md` 第三步。
 这里只登记接进了什么：
 
 - **已接进命令行的有七组**（2026-10-01 起五组，2026-10-02 补 `xxgkAging`、`xxgkEffectLevel`）：
@@ -162,7 +162,7 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
   `tax_cases.py` 的 `CASE_COLUMN=5741`）。
 - **函数层与命令行都不发**：`xxgkTaxPolicy`、`xxgkFormulatedYear`、`industrytypename`、`likeDoc`、
   `searchWordMd5`，以及 `startTime`／`endTime` 那一族（同一区间带完整时间戳时与 `cwrq` 那族收到
-  同一个集合，页面自己发的是 `cwrq`）。往命令行加新维度时按 `subskills/chinatax/NOTE.md`
+  同一个集合，页面自己发的是 `cwrq`）。往命令行加新维度时按 `search_source/chinatax/NOTE.md`
   第二节那张单发参数表逐行核对，不要凭记忆改。
 - 值域是拦停依据：`AGING_VALUES`／`EFFECT_LEVEL_VALUES` 之外的值由 `build_filters` 在发请求前
   抛 `ValueError`。放过去拿到的是 `total=0`，与"这一维真的没有内容"在响应里是同一个形态。
@@ -200,7 +200,7 @@ python scripts/tax_web_search.py "研发费用" --doc-type "财政部 税务总�
     --doc-year 2023 --doc-no 7
 
 # 成文日期区间：命令行只收 YYYY-MM-DD，发出去前补成整点时间戳（全站基数下 2024 全年收到 207 条；
-# 不补时间戳的那一发量的不是区间，见 subskills/chinatax/NOTE.md 第三节）
+# 不补时间戳的那一发量的不是区间，见 search_source/chinatax/NOTE.md 第三节）
 python scripts/tax_web_search.py "增值税" --cwrq-from 2024-01-01 --cwrq-to 2024-12-31
 
 # 按录入的时效或效力等级收窄（取值域就是命令行回显的那几档，域外值发请求前就报错；
@@ -214,7 +214,7 @@ python scripts/tax_web_search.py "增值税" --order date_desc --size 8
 # 要连新闻、视频、各地动态一起搜时才关白名单（关掉后基数换成全站那一档，两档的成分对比见 NOTE.md 第二节）
 python scripts/tax_web_search.py "小微企业" --all-labels
 
-# 法规库清单同样可下推维度（把翻页窗口对准法规文件；栏目与分面那批读数在 subskills/chinatax/NOTE.md 第二节）
+# 法规库清单同样可下推维度（把翻页窗口对准法规文件；栏目与分面那批读数在 search_source/chinatax/NOTE.md 第二节）
 python scripts/tax_fgk.py "增值税" --tax-type 增值税 --pages 5
 
 # 逐条查关联文件/解读/问答（每条多一次 POST，不依赖 --body、不进缓存）
@@ -309,7 +309,7 @@ python scripts/tax_browser.py --check                     # 探测本机已装�
 用户的情形上。**
 
 税屋的站点机制——WAF 挑战的形态、放行凭据哪一枚有效与能用多久、正文容器与元信息字段、
-栏目地图与分页参数、站内搜索表单——全在 `subskills/shui5/SKILL.md`，取不到正文时先按
+栏目地图与分页参数、站内搜索表单——全在 `search_source/shui5/SKILL.md`，取不到正文时先按
 它判"是没凭据还是站点上没这篇"。这里只留主干上一条：这个站在没凭据时，**同一个地址
 返回的是另一份页面**，首页、文章页、`robots.txt` 与一个不存在的路径都回同一份挑战页，
 HTTP 都是 200，所以"请求成功"不等于"取到内容"。程序的处理是探测文件系统里已安装的
@@ -326,7 +326,7 @@ JSON 接口 `GET /xy/Search.do`，无 WAF、不校验 UA、不需要凭据，也
 `title` 盖掉；栏目限定只认叶节点，给父节点回 0 条而它下面确实挂着文章，这一句会写进
 `_filter_note`；`channel=0` 在这一层等于不提交那一枚、拿到网站与触屏的并集，只有站点不认的
 值才打到那份 37 字节的空结构。三种越界的回法（HTTP 500、静默按缺省、回空结构）逐档记在
-`subskills/ctaxnews/NOTE.md`，取数前判据在 `subskills/ctaxnews/SKILL.md`。
+`search_source/ctaxnews/NOTE.md`，取数前判据在 `search_source/ctaxnews/SKILL.md`。
 `match`、`channel`、`size`、`max_rows`、`--pages` 这五枚的取值域在本层是**发出之前**判的：
 越界的写法不回半份数据，`_status` 直接写「没走成」并带上那一枚的值域；`--size` 收的是合并同稿后的
 **篇**数、`--max-rows` 收的是站点给的**行**数，两枚都只收紧，谁小谁生效，翻到底时撞到行数上限会在
@@ -446,7 +446,7 @@ python scripts/tax_web_search.py "<关键词>" --size 10
 python scripts/tax_shui5.py "<关键词>" --size 5 --read
 python scripts/tax_wechat.py "<关键词>" --size 5 --read
 
-# 中国税网 — 报社登载的政策转载、解读与税案通报（④ 的 ctax 源；单站命令与判据见 subskills/ctaxnews/）
+# 中国税网 — 报社登载的政策转载、解读与税案通报（④ 的 ctax 源；单站命令与判据见 search_source/ctaxnews/）
 python scripts/tax_ctax.py "<关键词>" --size 5 --read
 python scripts/tax_ctax.py --find-doc "<文号>"
 
@@ -501,7 +501,7 @@ NPC 验到 16 路并发、三趟共 104 次请求，下面那三种形态一个�
 |---|---|---|
 | NPC 限流 | 断连、挑战页、5xx | 等退避重跑，不要改成别的关键词 |
 | fgk 正文取不到 | `_error` 写明"该条正文为视频/图片，无文字内容" | 换同题材的文号条目，不要据标题推测正文 |
-| 税屋正文取不到 | 每条结果带 `_error` | 确认 `--check` 是否探到浏览器；仍失败改用公众号。**先分清是没凭据还是站点上没这篇**：没凭据时任何地址都回同一份挑战页，判据与凭据寿命见 `subskills/shui5/SKILL.md` |
+| 税屋正文取不到 | 每条结果带 `_error` | 确认 `--check` 是否探到浏览器；仍失败改用公众号。**先分清是没凭据还是站点上没这篇**：没凭据时任何地址都回同一份挑战页，判据与凭据寿命见 `search_source/shui5/SKILL.md` |
 | 搜狗反爬／冷却／预算耗尽 | `_error` 非空；反爬或熔断另带 `_blocked=True`，预算耗尽不带该标记 | 冷却立即报错、不发请求；不立即重跑、改词、切代理或轮换端点绕过。保留失败原因，税屋可显式走 `--channel native` |
 | 搜狗网络失败／结构改版 | 网络异常与 5xx 才有限重试；有结果区却无可用直链、或既无结果区也无无结果提示，均带 `_error` | 按原因稍后复查，不当真 0 条；只有无错误的空结果才是本轮未命中，不代表站内没有相关内容 |
 | 总局清单为空却报告了命中数 | `_empty_reason` 分两种成因：写"已翻过末页"就是翻页参数越界，按已取回的清单下结论即可；写"该页在末页之内却没给条目清单"就是这一轮没取到清单，换检索词再取一轮才有结论 | 两种都不等于"库里没有这份文件"，答案里不得据空清单说无此规定 |

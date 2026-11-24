@@ -26,10 +26,11 @@
      所属步骤那一节或对应的 `references/` 段落。`tests/red_line_map.py` 逐条核对编号、
      锚、目的地三者是否互相对上，以及每条正文在全仓库是否只出现一次——搬文本最容易
      出的事是搬丢一份或留下两份，两者都要能报红。
-  7. 指向 `subskills/*/{NOTE.md,SKILL.md}` 的指针：主文档、`references/*.md` 与
-     `scripts/*.py` 里 `subskills/…` 后面 46 个字符窗口内的「第X节」与「小节名」，
-     都要在目标文件的小节标题里对得上。站点细节下沉子技能之后主文档只剩指针，
-     小节改名或重排序号而指针不动就是断链，且断链只在有人照着去读时才暴露。
+  7. 指向 `search_source/*/{NOTE.md,SKILL.md}` 与 `subskills/*/{NOTE.md,SKILL.md}` 的
+      指针：主文档、`references/*.md` 与 `scripts/*.py` 里两种前缀（3.62.24 起十一源在
+      `search_source/`、两枚业务专题留在 `subskills/`）后面 46 个字符窗口内的「第X节」
+      与「小节名」，都要在目标文件的小节标题里对得上。站点细节下沉子技能之后主文档
+      只剩指针，小节改名或重排序号而指针不动就是断链，且断链只在有人照着去读时才暴露。
 
 第 3 项的"文件 → 章节名"抽取只认 SKILL.md 现有的两种句式（`` `x.md` 的"Y"一节``
 与 `` `x.md`「Y」 ``，后者已是多数），扩句式前先加提取规则，否则新指针会静默逃过
@@ -719,19 +720,26 @@ class TestRedLineOwnership(unittest.TestCase):
 
 
 SUB_DIR = ROOT / "subskills"
+SOURCE_DIR = ROOT / "search_source"
+# 3.62.24 起两类子技能各占一个根：search_source/ 按搜索源（十一源），
+# subskills/ 只剩业务专题。指针尺子两根都要认，只认一根会把迁走的那十一路
+# 读成"目录不存在"，而那种红与真正的断链看不出区别。
+DOC_ROOTS = (SOURCE_DIR, SUB_DIR)
 POINTER_DOC_NAMES = ("NOTE.md", "SKILL.md")
 POINTER_WINDOW = 46
-SUB_PTR_RE = re.compile(r"subskills/([^\s`\u4e00-\u9fff（）()【】「」，。；：、]+)")
+SUB_PTR_RE = re.compile(r"(?:subskills|search_source)/"
+                        r"([^\s`\u4e00-\u9fff（）()【】「」，。；：、]+)")
 CN_SECTION_RE = re.compile(r"第([一二三四五六七八九十]+)节")
 CN_H2_RE = re.compile(r"^[一二三四五六七八九十]+、")
 QUOTED_TITLE_RE = re.compile(r"「([^」]{4,60})」")
 
 
 def pointer_docs() -> dict:
-    """{仓库相对路径: 正文}，覆盖全仓会写 `subskills/` 指针的那几类文件。"""
+    """{仓库相对路径: 正文}，覆盖全仓会写子技能指针的那几类文件。"""
     files = ([SKILL, ROOT / "README.md"] + sorted(REF_DIR.glob("*.md"))
-             + sorted(SUB_DIR.glob("*/SKILL.md")) + sorted(SUB_DIR.glob("*/NOTE.md"))
              + sorted((ROOT / "scripts").glob("*.py")))
+    for base in DOC_ROOTS:
+        files += sorted(base.glob("*/SKILL.md")) + sorted(base.glob("*/NOTE.md"))
     return {f.relative_to(ROOT).as_posix(): f.read_text(encoding="utf-8") for f in files}
 
 
@@ -749,6 +757,15 @@ def iter_pointers(docs: dict):
                 docs[rel][m.end():m.end() + POINTER_WINDOW]
 
 
+def pointer_roots(site: str) -> list:
+    """两根里哪一根确实挂着这个目录（交回的是**根**，不是根下那个目录）。
+
+    交回根下的目录就会拿 `.name` 当根名，`search_source/chinatax` 的名字是
+    `chinatax`，拼出来的"目标路径"自成一个假断链。
+    """
+    return [base for base in DOC_ROOTS if (base / site).is_dir()]
+
+
 def section_pointer_count(docs: dict) -> int:
     """窗口里带「第X节」或「小节名」写法、因而真会去比对小节的指针条数。"""
     return len([1 for _, path, win in iter_pointers(docs)
@@ -764,13 +781,18 @@ def subskill_pointer_problems(docs: dict) -> list:
         site = parts[0]
         if not site or "<" in site:
             continue
-        if not (SUB_DIR / site).is_dir():
-            bad.append("%s 指着 subskills/%s，这个目录不存在" % (rel, path))
+        roots = pointer_roots(site)
+        if not roots:
+            bad.append("%s 指着 %s/%s，两个根下都没有这个目录"
+                       % (rel, "search_source|subskills", path))
             continue
         target = next((p for p in parts[1:] if p in POINTER_DOC_NAMES), "")
         if not target:
             continue
-        rel_target = "subskills/%s/%s" % (site, target)
+        rel_target = next(("%s/%s/%s" % (base.name, site, target)
+                           for base in roots
+                           if "%s/%s/%s" % (base.name, site, target) in docs),
+                          "%s/%s/%s" % (roots[0].name, site, target))
         if rel_target not in docs:
             bad.append("%s 指着 %s，这个文件不在仓库里" % (rel, rel_target))
             continue
@@ -795,28 +817,36 @@ def subskill_pointer_problems(docs: dict) -> list:
 
 STEP3_RE = re.compile(r"(?m)^## ③.*?\n(?=^## ④)", re.S)
 COMMAND_DOCS = ("references/commands.md", "references/out_of_library_layers.md")
-MIN_SUBSKILL_DIRS = 9
+# 3.62.24 起十一个源在 search_source/、两枚业务专题留在 subskills/，合计 13 目录。
+# 下限按目录总数算：只数一根的话，哪天把整根改名搬走，这条判据反而更松。
+MIN_SUBSKILL_DIRS = 13
 MIN_SELF_OWNED_SCRIPTS = 3
 
 
 def subskill_dir_names() -> list:
-    return sorted(p.name for p in SUB_DIR.iterdir() if p.is_dir())
+    return sorted(p.name for base in DOC_ROOTS for p in base.iterdir() if p.is_dir())
 
 
 def unrouted_subskills(step3: str, dirs: list) -> list:
-    """③（选路那一步）正文里没点到路径的目录名。"""
-    return [d for d in dirs if ("subskills/%s/" % d) not in step3]
+    """③（选路那一步）正文里没点到路径的目录名。
+
+    两根的指针都得认：③ 里写 `search_source/fgk/` 与写 `search_source/maodocs/`
+    是同一件事，只认一种前缀就会把已经点到的那一路误报成"没人指路"。
+    """
+    return [d for d in dirs
+            if not any("%s/%s/" % (base.name, d) in step3 for base in DOC_ROOTS)]
 
 
 def self_owned_script_paths() -> list:
     """各子技能自带的脚本，复测探针不算（它只在文档台账里被引用）。"""
     out = []
-    for d in sorted(SUB_DIR.iterdir()):
-        if not d.is_dir():
-            continue
-        for f in sorted(d.glob("*.py")):
-            if not f.name.startswith("probe_"):
-                out.append("subskills/%s/%s" % (d.name, f.name))
+    for base in DOC_ROOTS:
+        for d in sorted(base.iterdir()):
+            if not d.is_dir():
+                continue
+            for f in sorted(d.glob("*.py")):
+                if not f.name.startswith("probe_"):
+                    out.append("%s/%s/%s" % (base.name, d.name, f.name))
     return out
 
 
@@ -826,9 +856,10 @@ def script_command_gaps(scripts: list, command_docs: dict) -> list:
 
 
 class TestSubskillPointers(unittest.TestCase):
-    """`subskills/` 指针的后向一跳：指向子技能文件的指针要指得到那一节。
+    """子技能指针的后向一跳：指向子技能文件的指针要指得到那一节。
 
-    站点细节下沉到 `subskills/*/NOTE.md` 之后，主文档与脚本里只剩指针；小节改名或
+    站点细节下沉到 `search_source/*/NOTE.md`（3.62.24 前是 `subskills/`）之后，主文档与
+    脚本里只剩指针；小节改名或
     重排序号而指针不动，断链要到有人照着去读时才暴露。判据只看指针后面 46 个字符
     窗口里的两种写法：「第X节」要在目标文件的中文序号小节里对得上，「小节名」要在
     目标文件的二级标题里对得上（允许显示文字省掉标题后缀，与目录项同一把尺）。
@@ -855,8 +886,9 @@ class TestSubskillPointers(unittest.TestCase):
         """提取规则空转就是假绿：要比对小节的指针条数得有下限。
 
         口径：2026-10-20 拆出 npc-flk、⑤ 补上六源之外那四路的指针之后重扫，全仓 126 条
-        `subskills/` 指针里，窗口带「第X节」或「小节名」且路径点到了 NOTE.md/SKILL.md 的
-        有 17 条。把正则的排除字符类删宽、或不认「第X节」句式，这一条会先掉到下限以下。
+        子技能指针里，窗口带「第X节」或「小节名」且路径点到了 NOTE.md/SKILL.md 的
+        有 17 条。3.62.24 把十一源从 subskills/ 搬进 search_source/ 之后条数只增不减。
+        把正则的排除字符类删宽、或不认「第X节」句式，这一条会先掉到下限以下。
         """
         n = section_pointer_count(self.docs)
         self.assertGreaterEqual(n, 10, "只扫到 %d 条带小节写法的指针，提取规则被改坏了" % n)
@@ -864,7 +896,7 @@ class TestSubskillPointers(unittest.TestCase):
     def test_mutation_renumbered_section_is_caught(self):
         """自检：目标文件里那一节的中文序号换了，指针必须报红。"""
         docs = dict(self.docs)
-        key = "subskills/chinatax/NOTE.md"
+        key = "search_source/chinatax/NOTE.md"
         docs[key] = docs[key].replace("## 二、search5 的可发参数", "## 柒、search5 的可发参数", 1)
         p = subskill_pointer_problems(docs)
         self.assertTrue(any("第二节" in x for x in p), "序号改了却不报红：%s" % p)
@@ -872,25 +904,29 @@ class TestSubskillPointers(unittest.TestCase):
     def test_mutation_renamed_section_title_is_caught(self):
         """自检：小节改名而引文不动，「小节名」那条判据必须报红。"""
         docs = dict(self.docs)
-        key = "subskills/npc-flk/NOTE.md"
+        key = "search_source/npc-flk/NOTE.md"
         docs[key] = docs[key].replace("## 一、NPC（flk）命令行三处细节",
                                       "## 一、NPC（flk）命令行细节", 1)
         p = subskill_pointer_problems(docs)
         self.assertTrue(any("命令行三处细节" in x for x in p), "改名却不报红：%s" % p)
 
     def test_mutation_missing_site_directory_is_caught(self):
-        """自检：指针写到一个不存在的子技能目录，必须报红而不是被跳过。"""
+        """自检：指针写到一个不存在的子技能目录，必须报红而不是被跳过。
+
+        两根都要扫过才算不存在：只扫一根的话，一个在另一根里的真目录也会被
+        报成不存在，这条变异与那种误报就分不开了。
+        """
         docs = dict(self.docs)
         key = "references/commands.md"
         docs[key] = docs[key] + "\n见 `subskills/no-such-site/NOTE.md` 第一节。\n"
         p = subskill_pointer_problems(docs)
-        self.assertTrue(any("no-such-site" in x and "目录不存在" in x for x in p),
+        self.assertTrue(any("no-such-site" in x and "两个根下都没有" in x for x in p),
                         "目录不存在却不报红：%s" % p)
 
     def test_mutation_missing_target_file_is_caught(self):
         """自检：目标那份 NOTE.md 不在 docs 里（改名或漏收），要报文件不在仓库里。"""
         docs = dict(self.docs)
-        del docs["subskills/ctaxnews/NOTE.md"]
+        del docs["search_source/ctaxnews/NOTE.md"]
         p = subskill_pointer_problems(docs)
         self.assertTrue(any("这个文件不在仓库里" in x for x in p), "缺文件却不报红：%s" % p)
 
@@ -911,19 +947,19 @@ class TestSubskillPointers(unittest.TestCase):
     def test_mutation_subskill_dropped_from_routing_is_caught(self):
         """自检：删掉 ③ 里那一路的两个指针，判据要报出被删的那个目录名。"""
         self.assertEqual([], unrouted_subskills(self.step3, ["maodocs"]), "对照：本来点得到")
-        stripped = self.step3.replace("subskills/maodocs/", "subskills/other-docs/")
-        self.assertNotEqual(stripped, self.step3, "③ 里已经没有 subskills/maodocs/ 可删")
+        stripped = self.step3.replace("search_source/maodocs/", "subskills/other-docs/")
+        self.assertNotEqual(stripped, self.step3, "③ 里已经没有 search_source/maodocs/ 可删")
         self.assertEqual(["maodocs"], unrouted_subskills(stripped, subskill_dir_names()),
                          "删掉一路的指针却不报红")
 
     def test_mutation_script_removed_from_command_docs_is_caught(self):
         """自检：脚本路径从两份命令文档同时消失，gap 判据要抓到它。"""
-        target = "subskills/szse-lawrules/szse.py"
+        target = "search_source/szse-lawrules/szse.py"
         self.assertIn(target, self.command_docs["references/out_of_library_layers.md"],
                       "注入点不在命令文档里，先改注入锚")
         self.assertEqual([], script_command_gaps([target], self.command_docs),
                          "对照：未破坏时这一路本来落地")
-        docs = {k: v.replace(target, "subskills/szse-lawrules/") for k, v in self.command_docs.items()}
+        docs = {k: v.replace(target, "search_source/szse-lawrules/") for k, v in self.command_docs.items()}
         self.assertEqual([target], script_command_gaps([target], docs), "两份都改了名却不报红")
 
 

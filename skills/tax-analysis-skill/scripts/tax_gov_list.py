@@ -359,6 +359,11 @@ def seed_cited_cache(cache_path=None, index=None, *, only_missing=False) -> dict
     不必再靠运行时逐个检索。文号键用 tax_terms.doc_number_of 归一（与缓存读取端
     同一个正则），URL 仍过 tax_cited.is_official——非官方域不落。
 
+    title 必须一起种：读侧（tax_answer 缓存优先段）拿它现判"这条地址是不是这份
+    文件自己的"，没有标题就判不了、只能退回走网络——预热闭环等于没做。清单题面
+    实测普遍不带文号（1892 条带文号键的记录里能抽出文号的为 0），所以种进去的是
+    干净标题，读侧靠 title_identity 认同一性，不靠标题里的文号。
+
     Args:
         cache_path: 缓存文件路径，默认 tax_cited.CITED_LINKS（测试指临时文件）。
         index: 已加载的索引 dict，默认读 INDEX_PATH。
@@ -383,7 +388,7 @@ def seed_cited_cache(cache_path=None, index=None, *, only_missing=False) -> dict
         if only_missing and CITED.get_cited_link(dn, cache_path):
             stat["已有"] += 1
             continue
-        if CITED.put_cited_link(dn, url, cache_path):
+        if CITED.put_cited_link(dn, url, cache_path, title=r.get("title", "")):
             stat["写入"] += 1
     return stat
 

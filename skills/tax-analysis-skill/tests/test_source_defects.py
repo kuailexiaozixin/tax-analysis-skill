@@ -1773,6 +1773,15 @@ class TestRoundFailureIsNotSilent(unittest.TestCase):
         """税屋/公众号在草案轮拿到的词必须含"草案"，否则搜回的是现行规定。
 
         打桩三个 fetcher，跑 gather，抓每源被调用时收到的检索词。
+
+        桩必须**连 `FGK.search_fgk` 一起打**：这句题面点了《税收征管法》的名，
+        gather 在轮次循环之前先走点名定位（`locate_cited_document →
+        search_fgk → tax_web_search.search_chinatax`），这条路**不经过
+        `_FETCHERS`**，只桩取数函数时它照发真 HTTPS（2026-11-24 实测：一枚用例
+        18 次 connect、`urllib3` 报 Unverified HTTPS request to
+        www.chinatax.gov.cn，而异常被源层吞成 `_error`，用例仍然绿）。
+        同文件 `_跑一趟` L2208 那处就是这么双打的，这里原本漏了半边。
+        check_citations 一并关掉：文号回库核对本身要发检索。
         """
         seen = {}
 
@@ -1785,8 +1794,11 @@ class TestRoundFailureIsNotSilent(unittest.TestCase):
         Q = "请解读《税收征管法》修订草案，已提请全国人大常委会审议"
         with mock.patch.dict(ANS._FETCHERS,
                              {s: make(s) for s in ("npc", "fgk", "shui5",
-                                                   "wechat", "legis")}):
-            ANS.gather(Q, at="2026-09-29")
+                                                   "wechat", "legis",
+                                                   "whole_site")}), \
+             mock.patch.object(FGK, "search_fgk",
+                               lambda kw, size=6, **kw2: {"results": []}):
+            ANS.gather(Q, at="2026-09-29", check_citations=False)
         # 草案轮与非草案轮的 shui5 调用词并存，取含"草案"的那一次
         terms_used = seen.get("shui5", [])
         self.assertTrue(any("草案" in t for t in terms_used),

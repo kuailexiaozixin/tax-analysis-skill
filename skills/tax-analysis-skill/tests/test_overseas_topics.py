@@ -144,8 +144,9 @@ def test_whole_site_fetcher_opens_the_label_layer():
     """
     item = {"title": "丹麦提交支柱二法案", "url": "http://www.chinatax.gov.cn/x.html"}
     with mock.patch.object(AN.W, "search_chinatax", return_value=_ok(1, [dict(item)])) as m:
-        rows, err = AN._FETCHERS["whole_site"]("支柱二", 8)
+        rows, err, partial = AN._FETCHERS["whole_site"]("支柱二", 8)
     assert err == "", err
+    assert partial == "", partial
     assert m.call_args.kwargs["file_only"] is False, m.call_args
     assert rows[0]["_reliability_note"] and "境外辖区" in rows[0]["_reliability_note"], rows
     # 两种"没有"各留各的形：接口报失败要原样带出去，干净的 0 条不许被编成失败

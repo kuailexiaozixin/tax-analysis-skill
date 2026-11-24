@@ -47,6 +47,7 @@ import tax_shui5 as SH       # noqa: E402
 import tax_sogou as SOG      # noqa: E402
 import tax_wechat as W       # noqa: E402
 import tax_aggregator as AGG  # noqa: E402
+import tax_related as REL     # noqa: E402
 import tax_web_search as WS   # noqa: E402
 from tax_web_search import FGK_MARKER  # noqa: E402
 
@@ -239,6 +240,317 @@ class TestAggregatorGaps(unittest.TestCase):
         # 这句就得跟着改，改了才发现漏了。打桩给的是 npc／chinatax／ctax 三路有命中。
         self.assertIn("3/6", r["degraded_note"], r["degraded_note"])
         self.assertIn("税屋", r["degraded_note"])
+
+
+# ── ②″ 清单取到了、逐枚没取全：第四种形状必须在四个面上都有话 ──────────────
+class TestPartialRoundLoss(unittest.TestCase):
+    """`_partial_error`：站点给了清单，逐枚正文/地址却没取回来。
+
+    2026-11-24 探针 `.tmp-inspect/partial_loss_surfaces.py`（双臂 × 三面，控制组
+    先过才认读数）实测：三枚里两枚还原失败时，实务那一路交回 1 条而说明为空，
+    读成「网上只有 1 篇解读」；三枚全失败时读成「网上没有解读」；税屋那一路三枚
+    里两枚正文为空时交回 3 条（两条空正文）说明也为空，答案层把空正文条目照常
+    送进 evidence，读起来像「这三篇都核过了」。聚合层 errors={}、gaps=0，全是静的。
+
+    为什么不借用顶层 `_error` 说这件事：那枚的语义是「这一路整体没取到」，
+    `_rows_and_error` 见到它就把条目全部作废（`tax_answer.py:296-297`），
+    而这里清单确实取回了。两枚可以并存（站内断供 + 半截正文），所以下面
+    `test_both_shapes_coexist` 钉的是两条 gap 各说各的，不是合并成一条。
+    """
+
+    TITLES = ("增值税即征即退的操作口径", "留抵退税的申报表单变化", "六税两费减免的适用主体")
+
+    def _wx_block(self, i: int) -> str:
+        return ('<div class="txt-box"><div class="fl"><a class="account" href="#">'
+                '财税小课堂%d</a></div><h3><a href="/link?url=kk%d" '
+                'target="_blank">%s</a></h3><div class="timeDate">'
+                '1767225600</div></div>\n</div>' % (i, i, self.TITLES[i - 1]))
+
+    def _wx_page(self, n: int) -> str:
+        return "<html><body>" + "".join(self._wx_block(i) for i in range(1, n + 1)) + "</body></html>"
+
+    def _wechat_round_trip(self, n_ok: int, read_body: bool = False, n_body: int = 3):
+        """真的走一遍 search_wechat，只把取页、还原、取正文三处换掉。
+
+        n_ok：前几枚能还原出真实地址；n_body：前几枚能取回正文。
+        read_article 的真实契约是 (正文, 错误) 二元组（`tax_wechat.py:246`），
+        桩必须同形——写成裸字符串会让被测函数在解包处炸，看着像实现有缺陷。
+        """
+        page = self._wx_page(3)
+        sent = []
+
+        def fake_get(sess, url, **kw):
+            return _WxResp(page, "https://weixin.sogou.com/weixin?type=2&query=x")
+
+        def fake_restore(link, sess):
+            idx = int(link.rsplit("kk", 1)[1])
+            sent.append(idx)
+            if idx <= n_ok:
+                return "https://mp.weixin.qq.com/s?src=11&k=%d" % idx, ""
+            return "", "HTTP 500"
+
+        def fake_read(url):
+            idx = int(url.rsplit("k=", 1)[1])
+            if idx <= n_body:
+                return "正文 %d" % idx, ""
+            return "", "正文容器未命中（可能已删除）"
+
+        old_get, old_restore, old_read, old_sleep = (W._sogou_get, W._restore_url,
+                                                    W.read_article, W.time.sleep)
+        try:
+            W._sogou_get = fake_get
+            W._restore_url = fake_restore
+            W.read_article = fake_read
+            W.time.sleep = lambda s: None
+            return W.search_wechat("增值税", size=3, read_body=read_body)
+        finally:
+            (W._sogou_get, W._restore_url, W.read_article,
+             W.time.sleep) = (old_get, old_restore, old_read, old_sleep)
+
+    def test_wechat_all_restored_says_nothing(self):
+        """控制组：三枚还原都成 ⇒ 不许凭空编出一条"没取全"来。"""
+        r = self._wechat_round_trip(3)
+        self.assertEqual(3, r["total"])
+        self.assertNotIn("_partial_error", r, r.get("_partial_error"))
+        self.assertNotIn("_error", r)
+
+    def test_wechat_partial_restore_names_the_loss(self):
+        r = self._wechat_round_trip(1)
+        self.assertEqual(3, r["total"], "清单取到了，条数不该变")
+        self.assertNotIn("_error", r, "借顶层 _error 会把已取回的那条一起作废")
+        note = r["_partial_error"]
+        self.assertIn("2/3 条没还原出真实地址", note, note)
+        self.assertIn("不能当成完整的一轮用", note, note)
+
+    def test_wechat_total_restore_failure_is_still_partial_not_a_zero_hit(self):
+        """三枚全没还原：站点确实给了三条，不能说成「这一路 0 条/没有内容」。"""
+        r = self._wechat_round_trip(0)
+        self.assertEqual(3, r["total"])
+        self.assertIn("3/3 条没还原出真实地址", r["_partial_error"])
+
+    def test_wechat_lost_body_is_counted_apart_from_lost_link(self):
+        """还原成了、正文没取到 ⇒ 说的是"没取到正文"，不是"没有地址"。"""
+        r = self._wechat_round_trip(3, read_body=True, n_body=1)
+        note = r["_partial_error"]
+        self.assertIn("2/3 条没取到正文", note, note)
+        self.assertNotIn("没还原出真实地址", note, "地址都还原成功了，别混说")
+        self.assertEqual(3, r["total"])
+        r2 = self._wechat_round_trip(1, read_body=True, n_body=0)
+        both = r2["_partial_error"]
+        self.assertIn("2/3 条没还原出真实地址", both, both)
+        self.assertIn("1/3 条没取到正文", both, both)
+
+    def test_shui5_partial_body_is_headed_at_the_top(self):
+        """税屋：三篇里一篇正文没取到，顶层必须带出 `_partial_error`。"""
+        rows = [{"title": self.TITLES[i], "url": "https://www.shui5.cn/article/%d.html" % (i + 1),
+                 "date": "2026-02-0%d" % (i + 1), "snippet": "摘要"} for i in range(3)]
+        arts = [{"url": r["url"], "content": "正文 %d" % (i + 1), "pages": 1, "title": r["title"],
+                 "date": r["date"], "summary": "摘要"} for i, r in enumerate(rows)]
+        arts[2]["content"] = ""
+        arts[2]["_error"] = "正文容器未命中"
+
+        old_sg, old_read, old_sleep = SH.sogou_search, SH.read_articles, SH.time.sleep
+        try:
+            SH.sogou_search = lambda q, site=None, size=5: {"results": rows, "total": 3,
+                                                            "searched_at": "2026-11-24"}
+            SH.read_articles = lambda urls, session=None: arts
+            SH.time.sleep = lambda s: None
+            r = SH.search_shui5("增值税", size=3, read_body=True)
+        finally:
+            SH.sogou_search, SH.read_articles, SH.time.sleep = old_sg, old_read, old_sleep
+        self.assertEqual(3, r["total"])
+        self.assertNotIn("_error", r, "正文逐枚失败不是整路失败")
+        self.assertIn("1/3 篇正文一篇都没取到", r["_partial_error"], r["_partial_error"])
+
+    def test_shui5_half_read_pages_is_its_own_phrase(self):
+        """续页没取到 = 正文只读到半截，与"一篇都没取到"分开说。"""
+        rows = [{"title": self.TITLES[0], "url": "https://www.shui5.cn/article/9.html",
+                 "date": "2026-02-01", "snippet": "摘要"}]
+        arts = [{"url": rows[0]["url"], "content": "只有一段", "pages": 1,
+                 "_pages_error": "第 2 页取不到（HTTP 500），正文止于第 1 页"}]
+        old_sg, old_read = SH.sogou_search, SH.read_articles
+        try:
+            SH.sogou_search = lambda q, site=None, size=5: {"results": rows, "total": 1,
+                                                            "searched_at": "2026-11-24"}
+            SH.read_articles = lambda urls, session=None: arts
+            r = SH.search_shui5("增值税", size=1, read_body=True)
+        finally:
+            SH.sogou_search, SH.read_articles = old_sg, old_read
+        self.assertIn("正文只读到半截", r["_partial_error"], r["_partial_error"])
+
+    def test_shui5_batch_lane_reports_partial_too(self):
+        """`search_many`（多枚词一轮发）自己也汇了一遍正文——这一档不能只修单词那条路。
+
+        2026-11-24 读源码：`tax_shui5.py:931-936` 与 `search_shui5` 各调一次
+        `_partial_note`；只修前者的话，CLI 的 `--keywords` 那一路依旧静默。
+        """
+        rows = [{"title": self.TITLES[i], "date": "2026-02-0%d" % (i + 1),
+                 "url": "https://www.shui5.cn/article/%d.html" % (i + 1),
+                 "matched_keywords": [self.TITLES[i]]} for i in range(2)]
+        arts = [{"url": rows[0]["url"], "content": "正文 1", "pages": 1, "_how": "打桩会话"},
+                {"url": rows[1]["url"], "content": "", "pages": 0,
+                 "_error": "正文容器未命中"}]
+        one = {"total": 1, "results": [rows[0]], "searched_at": "2026-11-24",
+               "_channel": "站内", "_channels": {"站内": "命中 1 条"}}
+        two = {"total": 1, "results": [dict(rows[1], matched_keywords=[self.TITLES[1]])],
+               "searched_at": "2026-11-24", "_channel": "站内",
+               "_channels": {"站内": "命中 1 条"}}
+        old_one, old_many = SH.search_shui5, SH.read_articles
+        with mock.patch.object(SH, "_pass_waf", return_value=(None, "打桩过 WAF")), \
+             mock.patch.object(SH.time, "sleep", lambda s: None):
+            calls = iter([one, two])
+
+            def fake_one(keyword, size=5, read_body=False, **kw):
+                return dict(next(calls))
+
+            try:
+                SH.search_shui5 = fake_one
+                SH.read_articles = lambda urls, session=None: arts
+                r = SH.search_many([self.TITLES[0], self.TITLES[1]], size=1)
+            finally:
+                SH.search_shui5, SH.read_articles = old_one, old_many
+        self.assertEqual(2, r["total"], "两枚词各一条、按 url 合并不该吞掉")
+        self.assertNotIn("_error", r, "整路是成功的")
+        self.assertIn("1/2 篇正文一篇都没取到", r["_partial_error"], r["_partial_error"])
+
+    def test_aggregator_gap_line_is_the_only_channel_for_it(self):
+        """聚合层 emit 那一支单独钉：收键与建档是两件事，漏任一件都静默。"""
+        ok = {"total": 1, "results": [{"title": "财税〔2025〕1号", "url": "https://x.test/a"}]}
+        shui5 = {"total": 1, "results": [{"title": self.TITLES[0],
+                                         "url": "https://www.shui5.cn/article/1.html",
+                                         "content": ""}],
+                 "_partial_error": "清单取回 1 条，但 1/1 篇正文一篇都没取到",
+                 "_channels": {"搜狗": "命中 1 条", "站内": "命中 1 条"}}
+        with mock.patch.object(AGG, "search_tax", return_value=ok), \
+             mock.patch.object(AGG, "search_chinatax", return_value=ok), \
+             mock.patch.object(AGG, "sogou_search", return_value=ok), \
+             mock.patch.object(AGG, "search_shui5", return_value=shui5), \
+             mock.patch.object(AGG, "search_wechat", return_value={"total": 0, "results": []}), \
+             mock.patch.object(AGG, "search_ctax", return_value=ok):
+            r = AGG.aggregate_search("测试词", size=5)
+        self.assertEqual({}, r["errors"], "逐枚失败不该记成整源失败")
+        g = [g for g in r["gaps"] if g["source"] == "shui5"]
+        self.assertEqual(1, len(g), r["gaps"])
+        self.assertTrue(g[0].get("partial"), g[0])
+        self.assertNotIn("税屋（清单取到", r["degraded_note"].replace("缺失：", ""),
+                         "degraded_note 只报层名，长句留在 gaps 里")
+        self.assertIn("税屋", r["degraded_note"], r["degraded_note"])
+
+    def test_practice_lane_carries_the_note_per_source(self):
+        """实务那一路：逐枚失败要按源名进说明，不能只留条目。"""
+        shui5 = {"total": 2, "results": [
+            {"title": self.TITLES[0], "url": "https://www.shui5.cn/article/1.html",
+             "date": "2026-02-01", "content": "有正文"},
+            {"title": self.TITLES[1], "url": "https://www.shui5.cn/article/2.html",
+             "date": "2026-02-02", "content": ""}]}
+        wechat = {"total": 1, "results": [
+            {"title": self.TITLES[2], "url": "", "date": "2026-01-03", "_error": "HTTP 500"}],
+            "_partial_error": "站点给了 1 条，但 1/1 条没还原出真实地址"}
+        with mock.patch.object(REL, "search_shui5", return_value=shui5), \
+             mock.patch.object(REL, "search_wechat", return_value=wechat):
+            items, note = REL.search_practice_sources("增值税", n=3)
+        self.assertIn("微信公众号", note, note)
+        self.assertIn("没还原出真实地址", note, note)
+        self.assertEqual(2, len(items), "税屋两枚照常交出（空正文那条也是真条目）")
+        self.assertEqual({"税屋"}, {i["source"] for i in items},
+                         "微信那枚没有地址，不该混进结果里")
+
+    def test_practice_lane_whole_source_failure_outranks_partial(self):
+        """整路失败与逐枚失败同时存在时，先说整路：那句已经足够严重。"""
+        d = {"total": 0, "results": [], "_error": "WAF 挑战未通过",
+             "_partial_error": "清单取回 2 条，但 2/2 篇正文一篇都没取到"}
+        with mock.patch.object(REL, "search_shui5", return_value=d), \
+             mock.patch.object(REL, "search_wechat", return_value={"total": 0, "results": []}):
+            _items, note = REL.search_practice_sources("增值税", n=3)
+        self.assertIn("WAF", note, note)
+        self.assertNotIn("一篇都没取到", note, "两枚不该并列——顶层失败那条说了算")
+
+    def test_aggregator_files_it_as_a_gap_not_an_error(self):
+        """聚合层：这一档进 gaps（带 partial 标记），不进 errors（那话术是"没取到内容"）。"""
+        ok = {"total": 1, "results": [{"title": "财税〔2025〕1号", "url": "https://x.test/a"}]}
+        wechat = {"total": 3, "results": [{"title": self.TITLES[0], "url": "",
+                                           "_error": "HTTP 500"}],
+                  "_partial_error": "站点给了 3 条，但 2/3 条没还原出真实地址"}
+        with mock.patch.object(AGG, "search_tax", return_value=ok), \
+             mock.patch.object(AGG, "search_chinatax", return_value=ok), \
+             mock.patch.object(AGG, "sogou_search", return_value=ok), \
+             mock.patch.object(AGG, "search_shui5", return_value={"total": 0, "results": []}), \
+             mock.patch.object(AGG, "search_wechat", return_value=wechat), \
+             mock.patch.object(AGG, "search_ctax", return_value=ok):
+            r = AGG.aggregate_search("测试词", size=5)
+        self.assertNotIn("wechat", r["errors"], r["errors"])
+        g = [g for g in r["gaps"] if g["source"] == "wechat"]
+        self.assertEqual(1, len(g), r["gaps"])
+        self.assertTrue(g[0]["partial"], g[0])
+        self.assertIn("清单取到、逐枚没取全", g[0]["label"], g[0]["label"])
+        self.assertIn("不能当成这一层已经看全", g[0]["impact"], g[0]["impact"])
+        self.assertIn("微信公众号", r["degraded_note"], r["degraded_note"])
+
+    def test_aggregator_keeps_both_shapes_when_they_coexist(self):
+        """站内断供（顶层 _error）与半截正文（_partial_error）同时成立：两条 gap 并存。"""
+        ok = {"total": 1, "results": [{"title": "财税〔2025〕1号", "url": "https://x.test/a"}]}
+        shui5 = {"total": 3, "results": [{"title": self.TITLES[0],
+                                         "url": "https://www.shui5.cn/article/1.html"}],
+                 "_error": "第 3 页返回空，但站点报这一词共 61 条：判为断供",
+                 "_partial_error": "清单取回 3 条，但 1/3 篇正文一篇都没取到",
+                 "_channels": {"搜狗": "命中 3 条", "站内": "命中 3 条"}}
+        with mock.patch.object(AGG, "search_tax", return_value=ok), \
+             mock.patch.object(AGG, "search_chinatax", return_value=ok), \
+             mock.patch.object(AGG, "sogou_search", return_value=ok), \
+             mock.patch.object(AGG, "search_shui5", return_value=shui5), \
+             mock.patch.object(AGG, "search_wechat", return_value={"total": 0, "results": []}), \
+             mock.patch.object(AGG, "search_ctax", return_value=ok):
+            r = AGG.aggregate_search("测试词", size=5)
+        sh = [g for g in r["gaps"] if g["source"] == "shui5"]
+        self.assertEqual(2, len(sh), "两件事各一条，合并就把断供说成没取全")
+        self.assertEqual({True, False}, {bool(g.get("partial")) for g in sh}, sh)
+        self.assertIn("shui5", r["errors"], "断供那档仍要走老通道")
+
+    def test_rows_and_error_carries_the_note_without_voiding_the_rows(self):
+        """答案层的三枚返回：行照常交出、说明另带——这是本轮最容易写错的一处。"""
+        d = {"total": 2, "results": [{"title": "a"}, {"title": "b"}],
+             "_partial_error": "清单取回 2 条，但 1/2 篇正文一篇都没取到"}
+        rows, err, partial = ANS._rows_and_error(d)
+        self.assertEqual(2, len(rows), "并进 err 会把已取回的两条一起作废")
+        self.assertEqual("", err)
+        self.assertIn("一篇都没取到", partial)
+        failed = {"results": [], "_error": "WAF 挑战未通过",
+                  "_partial_error": "清单取回 3 条，但 3/3 篇正文一篇都没取到"}
+        rows, err, partial = ANS._rows_and_error(failed)
+        self.assertEqual(([], "WAF 挑战未通过", ""), (rows, err, partial),
+                         "整路失败时第三枚让位：那一句已经涵盖了这一轮不可用")
+        empty = {"total": 0, "results": [], "_partial_error": "站点给了 0 条"}
+        self.assertEqual(([], "", ""), ANS._rows_and_error(empty),
+                         "没有条目时逐枚说明没有落点，不该冒出话来")
+
+    def test_round_functions_hand_the_note_up_as_the_third_slot(self):
+        for nm, mod, fn in (("_wechat_round", "WX", ANS._wechat_round),
+                            ("_shui5_round", "S5", ANS._shui5_round)):
+            env = {"total": 1, "results": [{"title": "x", "url": "https://y.test/1"}],
+                   "_partial_error": "清单取回 1 条，但 1/1 篇正文一篇都没取到"}
+            with mock.patch.object(getattr(ANS, mod),
+                                   "search_wechat" if nm.startswith("_wechat") else "search_shui5",
+                                   return_value=env):
+                rows, err, partial = fn("增值税", 3)
+            self.assertEqual(1, len(rows), nm)
+            self.assertEqual("", err, nm)
+            self.assertIn("一篇都没取到", partial, nm)
+
+    def test_gather_routes_it_to_partial_notes_not_errors(self):
+        """plan 里两条通道必须各走各的：errors 的话术是"取数失败"。"""
+        g = TestRoundFailureIsNotSilent("test_source_error_names_the_round_and_the_source")._gather(
+            partial=("shui5",))
+        self.assertTrue(g["partial_notes"], g)
+        self.assertFalse([e for e in g["errors"] if "一篇都没取到" in e],
+                         g["errors"])
+        a = ANS.compose(g)
+        self.assertTrue(a["partial_note"], a["partial_note"])
+        self.assertFalse(a["fetch_errors"], "这一档不是取数失败，别混进那一串")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ANS._print_answer(a)
+        self.assertIn("【清单取到、逐枚没取全】", out.getvalue())
+        self.assertNotIn("【取数失败】", out.getvalue())
 
 
 # ── ②' 网页端要把缺口显示出来，不能显示成普通的 0 条 ──────────────────────
@@ -1349,13 +1661,22 @@ class TestRoundFailureIsNotSilent(unittest.TestCase):
     法律 = {"title": "中华人民共和国税收征收管理法", "category": "法律",
             "status": "现行有效", "url": "http://x/法律"}
 
-    def _gather(self, fail=(), with_law=True):
-        """把所有源换成打桩客户端：fail 里的源报"取数失败"，其余回条目。"""
+    def _gather(self, fail=(), with_law=True, partial=()):
+        """把所有源换成打桩客户端：fail 里的源报"取数失败"，partial 里的报"清单
+        取到、逐枚没取全"，其余回条目。
+
+        桩的返回形必须与 `_FETCHERS` 的真实契约同元数（三元）。桩形错位时解包
+        抛 ValueError、被 gather 的 `except Exception` 吞掉，测试照样绿却钉不住
+        契约——这一课在 3.62.13 记过一次，同形再来一遍。
+        """
         def make(src):
             def fn(term, size):
                 if src in fail:
-                    return [], "响应不是 JSON: Expecting value: line 1 column 1 (char 0)"
-                return [dict(self.规章)] + ([dict(self.法律)] if with_law and src == "npc" else []), ""
+                    return [], "响应不是 JSON: Expecting value: line 1 column 1 (char 0)", ""
+                if src in partial:
+                    return [dict(self.规章)], "", "清单取回 1 条，但 1/1 篇正文一篇都没取到"
+                rows = [dict(self.规章)] + ([dict(self.法律)] if with_law and src == "npc" else [])
+                return rows, "", ""
             return fn
         with mock.patch.dict(ANS._FETCHERS,
                              {s: make(s) for s in ("npc", "fgk", "shui5", "wechat", "legis")}):
@@ -1378,13 +1699,15 @@ class TestRoundFailureIsNotSilent(unittest.TestCase):
     def test_clean_empty_round_stays_silent(self):
         """干净的空结果不许编出一条失败来——两种"没有"分开，也得各自成立。"""
         with mock.patch.dict(ANS._FETCHERS,
-                             {s: (lambda t, n: ([], ""))
+                             {s: (lambda t, n: ([], "", ""))
                               for s in ("npc", "fgk", "shui5", "wechat", "legis")}):
             g = ANS.gather(self.Q, at="2026-09-29")
         self.assertEqual([], g["errors"])
+        self.assertEqual([], g["partial_notes"])
         self.assertEqual([], [f for r in g["rounds_done"] for f in r["failed"]])
         a = ANS.compose(g)
         self.assertEqual("", a["fetch_note"])
+        self.assertEqual("", a["partial_note"])
         self.assertTrue(a["evidence_gap"], "一条依据都没取到时该说证据缺口，不是取数失败")
 
     def test_legislation_lane_items_cannot_become_primary(self):
@@ -1398,8 +1721,9 @@ class TestRoundFailureIsNotSilent(unittest.TestCase):
         page = {"results": [{"title": "法律草案审议 中国人大网",
                              "url": "http://www.npc.gov.cn/npc/c2/x.html"}], "total": 1}
         with mock.patch.object(ANS.SG, "sogou_search", return_value=page) as hit:
-            rows, err = ANS._legis_round("税收征收管理法 修订草案", 8)
+            rows, err, partial = ANS._legis_round("税收征收管理法 修订草案", 8)
         self.assertEqual("", err)
+        self.assertEqual("", partial)
         self.assertEqual("npc.gov.cn", hit.call_args.kwargs["site"])
         self.assertEqual("medium", rows[0]["_reliability"])
         self.assertTrue(rows[0]["legislative_process"])
@@ -1442,7 +1766,7 @@ class TestRoundFailureIsNotSilent(unittest.TestCase):
         def make(src):
             def fn(term, size):
                 seen.setdefault(src, []).append(term)
-                return [], ""
+                return [], "", ""
             return fn
 
         Q = "请解读《税收征管法》修订草案，已提请全国人大常委会审议"
@@ -1861,12 +2185,12 @@ class TestCitationCheckReachesTheAnswer(unittest.TestCase):
             return dict(库)
 
         def make(src):
-            """按源发桩：返回 fetcher，取数契约是 (条目, 失败说明)。"""
+            """按源发桩：返回 fetcher，取数契约是 (条目, 失败说明, 逐枚没取全的说明)。"""
             if src == "shui5":
-                return lambda term, size: ([dict(文)] if with_practice else [], "")
+                return lambda term, size: ([dict(文)] if with_practice else [], "", "")
             if src == "npc":
-                return lambda term, size: ([dict(法)], "")
-            return lambda term, size: ([], "")
+                return lambda term, size: ([dict(法)], "", "")
+            return lambda term, size: ([], "", "")
 
         with mock.patch.dict(ANS._FETCHERS,
                              {s: make(s) for s in ("npc", "fgk", "shui5",

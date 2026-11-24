@@ -20,6 +20,7 @@ import ast
 import contextlib
 import io
 import json
+import os
 import re
 import sys
 import tempfile
@@ -33,6 +34,18 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
+
+# 本文件的缓存必须落在临时目录，不能落在用户真实 ~/.cache/tax-analysis-skill。
+# 2026-11-24 逐文件实测（.tmp-inspect/cache_write_per_file.py，31 枚离线测试）：
+# 只有本文件会往用户盘漏条目——每跑一遍新增 2 枚详情档（id 形如 SHARED-OK-<12hex>
+# 与 SHARED-NOCACHE-<12hex>），因为 _detail_call 的 bbbs_id 带 uuid 每次不同：
+# id 必须每次不同（否则上一轮缓存冒充本轮结果），于是污染只增不减，盘上已积 167 枚。
+# 改道走 TAX_CACHE_DIR（tax_cache.CacheManager 建实例时读它）而不是逐个换 .dir：
+# 本文件有二十多处缓存触点，逐处换 .dir 迟早漏一枚；这行放在导入 scripts 之前，
+# 因为 tax_detail 的模块级 _detail_cache 在导入那一刻就按当时的环境变量定型。
+# 直接跑本文件（python tests/test_source_defects.py）与 pytest 两条路都经过这里；
+# tests/run_all.py 另外在子进程环境里兜了一层，挡的是"以后新测试忘了设"。
+os.environ.setdefault("TAX_CACHE_DIR", tempfile.mkdtemp(prefix="tax-test-cache-"))
 
 import tax_ctax as CT      # noqa: E402
 import tax_cache             # noqa: E402

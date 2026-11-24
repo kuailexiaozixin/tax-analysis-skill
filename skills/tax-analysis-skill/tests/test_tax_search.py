@@ -11,6 +11,16 @@ from pathlib import Path
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent / "scripts"
+
+# 本文件是联网 e2e，真站点读数要落盘，但落点不能是用户真实 ~/.cache/tax-analysis-skill：
+# 2026-11-24 实测（.tmp-inspect/cache_write_footprint.py）跑一遍**改写** 2 枚——
+# 其中 `CacheManager(enabled=True).clear()`（test_search_with_cache 里那句"先清干净"）
+# 拿默认命名空间直接删用户盘条目，越界删除比污染更重；test_fetch_detail 全程不打桩，
+# 又按生产键往用户写。这枚出口让两者都落进临时目录，"第一次不命中、第二次命中"
+# 的前提由空目录本身保证，不再需要清用户盘。放在导入 scripts 之前，因为
+# tax_detail._detail_cache 在导入那一刻就按当时的 TAX_CACHE_DIR 定型。
+os.environ.setdefault("TAX_CACHE_DIR", tempfile.mkdtemp(prefix="tax-e2e-cache-"))
+
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from tax_search import (search_tax, resolve_tax_type, detect_intent,

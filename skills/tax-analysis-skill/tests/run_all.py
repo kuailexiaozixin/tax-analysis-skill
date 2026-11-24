@@ -14,8 +14,10 @@
 """
 
 import argparse
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -24,6 +26,26 @@ PROJECT_ROOT = TESTS_DIR.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 
 PY = sys.executable
+
+# 门禁整程共用一枚临时缓存目录，经 TAX_CACHE_DIR 传进每个子进程。
+# 为什么放这儿：2026-11-24 逐文件实测（.tmp-inspect/cache_write_per_file.py，
+# 31 枚离线文件）——只有 test_source_defects.py 会往用户真实缓存漏条目
+# （每跑一遍 +2 枚 uuid 键详情档，只增不减），test_tax_search.py 那句
+# CacheManager(enabled=True).clear() 更直接拿默认命名空间清用户盘。
+# 各测试文件自己会在头部设这枚出口（挡住 python tests/test_x.py 直跑与
+# pytest 两条路），这里再兜一层是防"以后某枚新测试忘了设"——run_all 是
+# subprocess 直跑单文件、conftest.py 不参与那条路，env 是唯一能一处管住
+# 全部门的落点。
+GATE_CACHE_DIR = None
+
+
+def _gate_env():
+    global GATE_CACHE_DIR
+    if GATE_CACHE_DIR is None:
+        GATE_CACHE_DIR = tempfile.mkdtemp(prefix="tax-gate-cache-")
+    env = dict(os.environ)
+    env["TAX_CACHE_DIR"] = GATE_CACHE_DIR
+    return env
 
 
 def _compile_all():
@@ -68,6 +90,8 @@ OFFLINE_GROUP = [
     ("限流记录实测台账契约（三字段齐全、闸与记录一一对应）",
      [PY, str(TESTS_DIR / "test_rate_limit_ledger.py")]),
     ("detail 缓存用例（命名空间/留痕/正文红线）", [PY, str(TESTS_DIR / "test_detail_cache.py")]),
+    ("缓存落点出口用例（TAX_CACHE_DIR 改道、用户盘计数不变、门禁子进程带出口）",
+     [PY, str(TESTS_DIR / "test_cache_dir_exit.py")]),
     ("服务端路由用例（25 路由/状态码/打桩上游）", [PY, str(TESTS_DIR / "test_server_routes.py")]),
     ("日期区间用例（NPC 复核/只给单端/聚合下推与窗口内补筛/400/前端承接）",
      [PY, str(TESTS_DIR / "test_date_window.py")]),
@@ -119,7 +143,7 @@ def _run_item(item):
     else:
         r = subprocess.run(item, capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
-                           cwd=str(PROJECT_ROOT))
+                           cwd=str(PROJECT_ROOT), env=_gate_env())
         ok = r.returncode == 0
         detail = _tail(r.stdout)
         if not ok:

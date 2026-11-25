@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """子技能"自成一体、可单独对外分发"的离线结构用例。不联网、不开浏览器、不调模型。
 
-这一层守的是五件事，全都不问内容对错，只问"这一份文档单独拿出去还站不站得住"：
+这一层守的是七件事，全都不问内容对错，只问"这一份文档单独拿出去还站不站得住"：
+   下面 1.–5. 是原有的五件；6. 是子技能自己声明的文件哈希（2026-11-26 那一轮加），
+   7. 是镜像件的声明要有当日读数背书（同一轮加）。
 
   1. **两份文档齐全**：每个子技能目录都有 `SKILL.md` 与 `NOTE.md`，且
      `SKILL.md` 里有 `## 工作流` 那一节。只留一份的目录，读者拿到的是命令清单
      而没有做事的顺序；工作流被改名，母技能那句"照子技能那一节走"就落空。
-     `chenyiwei-bbs` 是上游镜像件（须与站点字节一致，见它自己的 NOTE.md「收录来源」），
-     结构由上游定，这一项对它豁免，其余四项照查。
+     `chenyiwei-bbs` 是上游件（本仓库不改写它，见它自己的 NOTE.md「收录来源」），
+     结构由上游定，这一项对它豁免，其余四项照查。2026-11-26 那轮量到它与上游已分叉，
+     所以这里说的是「不改写」，不是「与上游一致」。
   2. **不引用主技能的私有编号**：主技能 `SKILL.md` 那条分析主线有 13 步（①–⑬），
      所以子技能文档里 ⑤ 及以上的圈号只可能是"回 ⑦ 定级""进 ⑧"这种指针——一旦
      子技能被单独分发，收的人手上没有那 13 步，编号就指不到东西。文内自数的
@@ -15,7 +18,7 @@
      读法、R&D-Expenses 的三条能力线）；要自数到第五项就改用 `1.` 的阿拉伯
      数字列表。
   3. **路径指针存在**：文档里 `references/…`、`scripts/…`、`tests/…`、`frontend/…`、
-     `search_source/…`、`subskills/…`、`eval/…` 那 196 处指针（2026-11-26 本轮实测口径
+     `search_source/…`、`subskills/…`、`eval/…` 那 199 处指针（2026-11-26 本轮实测口径，上一轮 3.62.36 扫到 196）
      见下面"计数"），先按子技能
      目录解、再按仓库根解。R&D-Expenses 有自己的 `references/`，母技能那一份
      在仓库根，两套都算落地；写成 `scripts/tax_browser.BrowserSession` 那种带符号名
@@ -30,9 +33,9 @@
      该模块且模块有该属性。子技能说"值域常量在 `tax_web_search.FILE_LABELS`"而那个
      名字已漂走，读者按图索骥会扑空，而这句话在文档里读起来完全正常。
 
-计数口径（2026-11-26 本轮重扫；上一轮 3.62.32 扫到语料 29 份、路径 194／符号 103／编号 83）：语料 = `search_source/*/*.md` + `subskills/*/*.md` 共 29 份
+计数口径（2026-11-26 本轮重扫；上一轮 3.62.36 扫到语料 29 份、路径 196／符号 106／编号 84）：语料 = `search_source/*/*.md` + `subskills/*/*.md` 共 29 份
 （15 个目录：13 个搜索源目录各 2 份、R&D-Expenses 只 1 份 SKILL.md、tax-preference 2 份）；
-路径指针 196 处、符号引用 106 处、编号指针 84 处（排除标题行与步定义行后）。
+路径指针 199 处（本轮 196→199 差 3 处，来自 chenyiwei-bbs 那一刀新写的三枚指针）、符号引用 106 处、编号指针 84 处（排除标题行与步定义行后）。
 这三枚数在本文件里各有一条用例下限盯着，检查规则一旦漏抓（正则被改窄、语料被改空）
 就会报红，而不是安静地少查。
 
@@ -42,6 +45,7 @@
 判据不报红就等于没有。
 """
 
+import ast
 import importlib
 import hashlib
 import re
@@ -683,6 +687,102 @@ class TestBrowserChannelPaging(unittest.TestCase):
         got = self.szse._enumerate_browser("rule/stock/trade/index.html", Sess(), 40)
         self.assertEqual(len(got), 1)
         self.assertEqual(len(calls), 2)
+
+
+# ── 7 上游镜像件的声明要有当日读数背书 ──────────────────────
+
+# chenyiwei-bbs 那份 NOTE 长期写着「与上游字节一致，未作任何改写」，而本仓库没有任何
+# 可复跑的东西量过上游：上面第 6 层哈希守卫只核对「盘上这份 == NOTE 声明的那串」。
+# 2026-11-26 第一次量，上游那份只剩 7 枚端点（盘上 13 枚）、逐行不同 305 行，而且
+# 盘上表里的 /api/public/related 今天回 410——照 NOTE 旧教的 `curl -o` 直接覆盖会把
+# 一份更全的文档换成一份更旧的。这一层不问上游对不对，只问「这句声明有没有当日的
+# 读数撑着」：没有日期的句子等于没量过。
+MIRROR_DIR = SEARCH_SOURCE / "chenyiwei-bbs"
+DATE_RE = re.compile(r"20\d\d-\d\d-\d\d")
+
+
+def calibration_rows(text):
+    """实测校正那张表的数据行（带粗体首格的那些），表头与分隔行不算。"""
+    body = text.split("## 实测校正", 1)
+    assert len(body) == 2, "NOTE 里没有「实测校正」那一节"
+    rows = []
+    for ln in body[1].split("## 主线里的唯一入口", 1)[0].splitlines():
+        s = ln.strip()
+        if not s.startswith("|") or s.count("|") < 4:
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if "**" in cells[0]:
+            rows.append(ln)
+    return rows
+
+
+def probe_plan(path):
+    """从探针源码里解出端点清单与请求上限（不发请求，纯静态读）。"""
+    plan = cap = None
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign):
+            name = getattr(node.targets[0], "id", "")
+            if name == "ENDPOINT_PROBES":
+                plan = ast.literal_eval(node.value)
+            elif name == "MAX_REQUESTS":
+                cap = ast.literal_eval(node.value)
+    return plan, cap
+
+
+class TestMirrorClaimBackedByReadings(unittest.TestCase):
+    """镜像件的收录声明、实测校正表与常驻探针三者要互相对得上。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.note = (MIRROR_DIR / "NOTE.md").read_text(encoding="utf-8")
+        cls.probe = MIRROR_DIR / "probe_mirror.py"
+
+    def test_a_rerunnable_probe_exists_next_to_the_mirror(self):
+        """没有可复跑的探针，「与上游比过」这句话就只是叙述。"""
+        self.assertTrue(self.probe.exists(),
+                        "chenyiwei-bbs 目录里没有 probe_mirror.py——镜像声明没人能复算")
+
+    def test_the_source_table_admits_divergence_instead_of_claiming_identity(self):
+        row = [ln for ln in self.note.splitlines() if ln.strip().startswith("| 文件 |")]
+        self.assertEqual(1, len(row), "收录来源表里那一行「文件」不唯一")
+        self.assertIn("分叉", row[0],
+                      "「文件」那一行仍在声称与上游一致；上游已改，这句必须写成分叉")
+        self.assertTrue(DATE_RE.search(row[0]), "分叉那句没带量到它的日期")
+
+    def test_every_calibration_row_carries_a_measured_date(self):
+        rows = calibration_rows(self.note)
+        self.assertGreaterEqual(len(rows), 6,
+                                "校正表少于 6 行（本轮 %d 行），判据面被改空了" % len(rows))
+        undated = [ln.split("|")[1].strip()[:24] for ln in rows if not DATE_RE.search(ln)]
+        self.assertEqual([], undated, "这些行没有日期，等于没量过：%s" % undated)
+
+    def test_the_probe_plan_matches_the_request_count_the_note_promises(self):
+        """NOTE 教的复测入口写了几发，探针就得计划几发（上游一发 + 端点逐枚一发）。"""
+        plan, cap = probe_plan(self.probe)
+        self.assertTrue(plan, "探针里没有 ENDPOINT_PROBES 这张表")
+        self.assertTrue(cap, "探针里没有 MAX_REQUESTS 这个上限")
+        total = 1 + len(plan)
+        self.assertLessEqual(total, cap, "计划 %d 发超过上限 %d" % (total, cap))
+        entry = [ln for ln in self.note.splitlines() if "%d 发" % total in ln]
+        self.assertTrue(entry,
+                        "NOTE 里没有「%d 发」这句（探针计划 1 发上游 + %d 枚端点）"
+                        % (total, len(plan)))
+
+    def test_the_wider_docs_do_not_repeat_the_byte_identity_claim(self):
+        for rel in ("README.md", "references/out_of_library_layers.md"):
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            bad = [ln.strip()[:60] for ln in text.splitlines()
+                   if "字节一致" in ln and ("chenyiwei" in ln.lower() or "auditdog" in ln)]
+            self.assertEqual([], bad, "%s 还在声称那份镜像与上游字节一致：%s" % (rel, bad))
+
+    def test_mutation_an_undated_calibration_row_is_caught(self):
+        """把某一行里的日期全抹掉，那一行必须报红（判据不报红等于没有）。"""
+        hit = next(ln for ln in calibration_rows(self.note) if DATE_RE.search(ln))
+        broken = self.note.replace(hit, DATE_RE.sub("当日", hit), 1)
+        self.assertNotEqual(broken, self.note, "注入没改动文本，注入点要重选")
+        undated = [ln.split("|")[1].strip()[:24]
+                   for ln in calibration_rows(broken) if not DATE_RE.search(ln)]
+        self.assertEqual(1, len(undated), "无日期行没被抓到：%s" % undated)
 
 
 if __name__ == "__main__":

@@ -176,9 +176,11 @@ python subskills/tax-preference/preference.py list-types
 先得有"包装脚本 + 准则内容进定级"这条链，而那条链正是"怎么用"一段拒绝掉的——准则
 内容一旦进了定级表，就会被当作税收依据来打分。
 
-chenyiwei 的其余接口差异（`recent?days=1` 可以整天空、`penalties` 的分页字段是字符串、
-`slug` 命名不带统一年份后缀）记在 `search_source/chenyiwei-bbs/NOTE.md`，那份文件与上游字节
-一致，改动都只写在 NOTE.md 里；maodocs 的站内实测差异（索引页混挂全局导航、小企业准则
+chenyiwei 的其余接口差异（`recent?days=1` 可以整天空、`/api/public/related` 今天回 410 已下线、
+`slug` 命名不带统一年份后缀）记在 `search_source/chenyiwei-bbs/NOTE.md`；那份 `SKILL.md` 是上游件、
+本仓库不改写它，补充只写在 NOTE.md 里——2026-11-26 量到它与上游**已分叉**（盘上 13 枚端点、上游那份只剩
+7 枚，逐行不同 305 行），所以同步前必须先跑 `search_source/chenyiwei-bbs/probe_mirror.py` 比过再决定，
+照旧写法直接覆盖会换来一份更旧的文档；maodocs 的站内实测差异（索引页混挂全局导航、小企业准则
 不按主题分篇、Git Bash 路径改写）记在 `search_source/maodocs/NOTE.md`；szse 的站内实测差异
 （业务规则页运行时模板需浏览器、规范性文件多为 PDF/DOC 附件、偶发 502 重试、t 编号不表
 版次）记在 `search_source/szse-lawrules/NOTE.md`。

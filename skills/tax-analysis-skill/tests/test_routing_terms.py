@@ -9,6 +9,8 @@
 """
 
 import argparse
+import contextlib
+import io
 import sys
 from pathlib import Path
 
@@ -592,6 +594,102 @@ def test_aging_with_unrecorded_effect_level_blocked_before_send():
     print("  [PASS] 三档不录时效的族与时效同发拦住，另五档同发放行，单发两维照旧")
 
 
+# 2026-11-25 六发 54 条实测（.tmp-inspect\probe29c.py）里的真实原文，逐字抄下来
+repeal_NOTE = ("根据《国家税务总局关于废止〈增值税一般纳税人登记管理办法〉的决定》"
+               "（国家税务总局令第62号），自2026年1月1日起，全文废止。")
+LONG_NOTE = "1.根据《国家税务总局关于发布已失效或废止的税收规范性文件目录的通知》" \
+            "（国税发〔2006〕62号），第一条第三款废止。2." + "修" * 900   # 实测最长 983 字符
+BLANKISH = ["", "null"]
+
+
+def _item_with(desc):
+    it = dict(_ITEM)
+    it["xxgk_description"] = desc
+    return it
+
+
+def _row_for(desc):
+    saved = W.requests.get
+    try:
+        W.requests.get = lambda url, params=None, **kw: _Resp(
+            _payload(1, [_item_with(desc)]))
+        return W.search_chinatax("增值税一般纳税人登记管理")["results"][0]
+    finally:
+        W.requests.get = saved
+
+
+def test_status_note_carries_the_repeal_basis_and_blanks_stay_blank():
+    """废止依据从接口的 xxgk_description 带下来，空值写法不许当成一句说明。
+
+    对应的坑（2026-11-25 二十四发实测，`.tmp-inspect\\probe29a.py`/`probe29c.py`）：
+    清单层的 xxgk_abolishDate 在 54 条里只有空串与字符串 "null"，一个真日期都没给过；
+    但同一批条目的 xxgk_description 有 45/54 带着「依据哪份文件、自何日起全文废止」
+    的原文（全文废止档 10/10 有值、25/54 含日期）。这一栏以前整个没接进输出，于是
+    读者只剩两条路：去抠正文，或者被一句「这一栏没有录入」劝退。
+    """
+    row = _row_for(repeal_NOTE)
+    assert row["status_note"] == repeal_NOTE, row.get("status_note")
+    # 来源要写清是哪一栏，否则下游没法解释这句话从哪来
+    assert row["status_note_from"] == "法规库录入项 xxgk_description", row
+    # 只带原文，不抠日期：这一栏在全文有效档偶尔装的是立法沿革
+    assert "自2026年1月1日起" in row["status_note"]
+
+    # 空串与字符串 "null" 都不许写键——带上下游就是把 "null" 当一句处置说明引用出去
+    for blank in BLANKISH:
+        r = _row_for(blank)
+        assert "status_note" not in r, (blank, r)
+        assert "status_note_from" not in r, (blank, r)
+
+    # 超长要截断：实测「已修改」档最长 983 字符是整部修改史，清单层装不下
+    long_row = _row_for(LONG_NOTE)
+    note = long_row["status_note"]
+    assert len(note) == W.STATUS_NOTE_LIMIT + len("…（原文更长，见详情页）"), len(note)
+    assert note.endswith("…（原文更长，见详情页）"), note[-30:]
+    assert note[:W.STATUS_NOTE_LIMIT] == LONG_NOTE[:W.STATUS_NOTE_LIMIT]
+
+    # 穿过法规库那一层：tax_fgk 的透传元组漏了这一栏，法规库这一路就还是"没录入"
+    fgk_src = (SCRIPTS / "tax_fgk.py").read_text(encoding="utf-8")
+    assert '"status_note", "status_note_from"' in fgk_src, "tax_fgk 透传元组没这两枚键"
+    saved = tax_fgk.search_chinatax
+    try:
+        tax_fgk.search_chinatax = lambda keyword, page=1, size=10, filters=None, **kw: \
+            {"total": 1, "results": [_item_row(page)]}
+        got = tax_fgk._scan_list("增值税一般纳税人登记管理", size=99,
+                                 max_pages=1, adaptive=False)["results"][0]
+    finally:
+        tax_fgk.search_chinatax = saved
+    assert got["status_note"] == repeal_NOTE, got
+    assert got["status_note_from"] == "法规库录入项 xxgk_description", got
+
+    # 命令行文本输出要当场看得见这一行，否则读清单的人还是得去 --json 里翻
+    saved = W.requests.get
+    buf = io.StringIO()
+    try:
+        W.requests.get = lambda url, params=None, **kw: _Resp(
+            _payload(1, [_item_with(repeal_NOTE)]))
+        argv = sys.argv
+        sys.argv = ["tax_web_search.py", "增值税一般纳税人登记管理"]
+        try:
+            with contextlib.redirect_stdout(buf):
+                W.main()
+        finally:
+            sys.argv = argv
+    finally:
+        W.requests.get = saved
+    out = buf.getvalue()
+    assert "处置: " in out and "全文废止" in out, out
+    print("  [PASS] 废止依据从 xxgk_description 带下来：原文在位、空值不写键、"
+          "超长截断、穿过法规库层、命令行打得出来")
+
+
+def _item_row(page):
+    """给 tax_fgk._scan_list 用的一条：URL 必须带法规库标识才收进结果。"""
+    row = _row_for(repeal_NOTE)
+    row["url"] = "http://fgk.chinatax.gov.cn/zcfgk/c100010/c5230001/content.html"
+    row["source_label"] = "税务总局法规库"
+    return row
+
+
 def test_doc_year_help_says_the_document_number_year():
     """`--doc-year` 的帮文要说"发文字号里的年份"，不能写成"成文年份"。
 
@@ -953,6 +1051,7 @@ def main():
         test_build_filters_rejects_malformed_values,
         test_aging_and_effect_level_domains,
         test_aging_with_unrecorded_effect_level_blocked_before_send,
+        test_status_note_carries_the_repeal_basis_and_blanks_stay_blank,
         test_doc_year_help_says_the_document_number_year,
         test_file_labels_is_the_default_scope,
         test_all_labels_switch_reopens_the_whole_site,

@@ -2016,6 +2016,7 @@ items.forEach((item,i)=>{
       <div class="title"><span style="font-size:11px;color:var(--g400);margin-right:6px">#${i+1}</span> ${sourceBadge(item)}${st}</div>
       <div class="meta"><span>${statusBadge(item)}</span>${item.document_number?`<span>文号:${esc(item.document_number)}</span>`:''}${item.effect_level?`<span>效力级别:${esc(item.effect_level)}</span>`:''}${(item.publish_date||item.date)?`<span>📅 ${dateFieldLabel(item)}:${esc(item.publish_date||item.date)}</span>`:''}${item.effective_date?`<span>施行:${esc(item.effective_date)}</span>`:''}${item.issuing_authority?`<span>🏛️ ${esc(item.issuing_authority)}</span>`:''}</div>
       ${item._reliability?`<div class="rel-note">提醒：${esc(item._reliability_note||`来源把这一条标为 ${item._reliability} 档存疑，未写明存疑在哪一处——引用前先核对这条到底有没有规定本题这件事`)}</div>`:''}
+      ${item.status_note?`<div class="rel-note">处置：${esc(item.status_note)}</div>`:''}
       ${idRow}</div>`;
   });
   if(total>items.length)h+=`<p style="text-align:center;font-size:12px;color:var(--g400);margin-top:12px">显示前${items.length}条，共${total}条 · 缩小搜索范围以获取更精确结果</p>`;

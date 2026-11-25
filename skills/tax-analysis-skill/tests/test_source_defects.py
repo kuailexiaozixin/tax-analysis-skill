@@ -1096,6 +1096,61 @@ class TestWechatSearchZeroHit(unittest.TestCase):
                          '<div class="txt-box">…</div>',
                          "有结果块形态里不该出现这枚标记")
 
+
+class TestWechatEmptyBodyIsItsOwnShape(unittest.TestCase):
+    """HTTP 200 / 0 字节是第三种形状，不能跟"改版"、"验证页"共用一句话。
+
+    2026-11-25 与 11-26 两轮实测（`.tmp-inspect\\probe33a.py`、`probe33b.py`）：
+    `weixin.sogou.com/weixin?type=2` 对**任何**检索词都回 200 / 0 字节 /
+    `Content-Type: text/plain`，连 2026-11-24 有结果的两枚词（"研发费用加计扣除"、
+    "增值税法 2026 实施"）与真 0 命中的那枚（"zzxqq不存在词组qmxk"）也一样；
+    真浏览器同址也是空白页。旧话术「既没有结果块也没有无结果提示：可能改版或落在
+    验证页」把三种成因压成一句，读者会照着去查改版与验证页——而这两件事当天
+    一条都不成立（改版至少回一份 HTML，验证页会跳 /antispider/ 或带验证字样）。
+    """
+
+    def _search_with(self, html):
+        resp = _WxResp(html, "https://weixin.sogou.com/weixin?type=2&query=x")
+        fake = _WxSession(resp)
+        old = W._sogou_get
+        try:
+            W._sogou_get = lambda sess, u, **kw: fake.get(u)
+            return W.search_wechat("某词", size=3)
+        finally:
+            W._sogou_get = old
+
+    def test_zero_byte_page_says_the_channel_gave_nothing(self):
+        r = self._search_with("")
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_fetch_failed"), "0 字节是取数失败，不是 0 命中")
+        self.assertNotIn("0 命中", r["_error"])
+        self.assertIn("0 字节", r["_error"])
+
+    def test_the_empty_body_sentence_does_not_blame_relayout(self):
+        """断供那一发不能同时说"可能改版"——那是把读者往错方向带。"""
+        r = self._search_with("")
+        self.assertNotIn("改版", r["_error"])
+        self.assertNotIn("验证页", r["_error"])
+
+    def test_three_shapes_are_three_sentences(self):
+        """0 命中 / 0 字节 / 有内容但认不出结构——三件事三句话，两两不同。"""
+        zero = self._search_with(TestWechatSearchZeroHit.ZERO_HIT_HTML)
+        empty = self._search_with("")
+        broken = self._search_with(TestWechatSearchZeroHit.BROKEN_HTML)
+        self.assertFalse(zero.get("_error"), "真 0 命中必须不带说明")
+        self.assertTrue(zero.get("_zero_hit"))
+        self.assertTrue(empty.get("_error"))
+        self.assertTrue(broken.get("_error"))
+        self.assertNotEqual(empty["_error"], broken["_error"],
+                            "0 字节与有内容认不出被写成同一句，读者就分不开成因")
+        self.assertIn("改版", broken["_error"],
+                      "有内容却认不出结构那一支才该提改版")
+
+    def test_a_nonempty_marker_free_page_still_reports_the_old_way(self):
+        """补了新支不能把旧支顶掉：有正文、无块、无标记，仍走"可能改版或落在验证页"。"""
+        r = self._search_with("<html><body>一段与检索无关的门户页</body></html>")
+        self.assertIn("既没有结果块也没有无结果提示", r["_error"])
+
 class _NpcResp:
     """够用的 NPC 响应替身：HTTP 永远 200，业务状态只活在 JSON 里。"""
 

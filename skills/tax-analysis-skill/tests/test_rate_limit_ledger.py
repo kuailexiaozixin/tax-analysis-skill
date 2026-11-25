@@ -177,6 +177,9 @@ class TestProbeShapeLabels(unittest.TestCase):
     旧探针只看状态码，把这发记成「200-正常页」，台账当场就会写成「未复现限流」——
     而生产 `tax_wechat.search_wechat` 同一发报的是「既没有结果块也没有无结果提示」。
     探针与生产读出两种性质，台账就失去了「下次按同一种形态比对」的能力。
+    3.62.33 起生产把 0 字节单列（「正文 0 字节：这一路当天没给页面」），与探针的
+    「200-空响应(0字节)」同族；本类的六条钉住探针侧，生产侧由
+    `tests/test_source_defects.py::TestWechatEmptyBodyIsItsOwnShape` 钉住。
     """
 
     @classmethod

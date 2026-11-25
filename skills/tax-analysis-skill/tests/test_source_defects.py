@@ -5280,6 +5280,315 @@ class TestNpcPreviewOneRound(unittest.TestCase):
         self.assertIn("--preview", buf.getvalue())
 
 
+# ── ⑬ 统一出口标记契约：0 条与没取到，从此各有一枚键 ────────────────────────
+class TestUnifiedExitMarkerContract(unittest.TestCase):
+    """3.62.26 起六个源的出口必须带这两枚键之一，消费面不再拿 `_error` 文本猜。
+
+    契约本身在 `tax_http`：`_zero_hit`＝请求跑成了、答案是 0 条；`_fetch_failed`＝
+    请求层面没取到。判据 `is_fetch_failure` 先看 `_zero_hit`（短路成 False），
+    再看 `_fetch_failed`，最后才拿 `_error` 兜底。没打键的老信封按失败处理是
+    有意选的：多报一次失败看得见、会去补，少报一次是静默——正是红线⑦那一族。
+
+    这一组用例逐源钉两向（合法空档 / 真失败），是因为本仓反复栽在"只改了
+    一个源"：`_doc_number_in_library` 那一路早就认标记，检索层却还认文本，
+    同一个 fgk 信封在两处读出两种性质。
+    """
+
+    RESULT_URL = SH.SEARCH_RESULT + "?page=0&searchid=12345"
+    WX_ZERO_HTML = ('<html><body><div class="b404-box" id="noresult_part1_container">'
+                    '<p class="p3">没有找到相关的微信公众号文章。</p></div></body></html>')
+    WX_BROKEN_HTML = "<html><body> totally restructured, no blocks, no marker </body></html>"
+
+    class _Shui5Session:
+        """search_native 只用 post 与 get 两件事。"""
+
+        def __init__(self, posts, landing):
+            self.posts, self.landing = list(posts), landing
+
+        def post(self, url, **kw):
+            return _Resp(self.posts.pop(0), url=self.landing)
+
+        def get(self, url, **kw):
+            return _Resp("")
+
+    def _fgk_scan(self, total, pages, errors=None):
+        calls = []
+        errors = errors or {}
+
+        def fake_search(keyword, page=1, size=10, filters=None, **opts):
+            calls.append(page)
+            out = {"total": total, "results": _fgk_hit(pages.get(page, 0), "p%d" % page)}
+            if page in errors:
+                out["_error"] = errors[page]
+                out["results"] = []
+            return out
+
+        with mock.patch.object(FGK, "search_chinatax", side_effect=fake_search):
+            return FGK._scan_list("契约词", size=99,
+                                  max_pages=(max(pages) + 3 if pages else 4),
+                                  adaptive=False)
+
+    def _npc(self, payload, keyword):
+        old = T._request
+        try:
+            T._request = lambda method, url, **kw: _NpcResp(payload)
+            return T.search_tax(keyword, scope="title", search_type=2, size=5)
+        finally:
+            T._request = old
+
+    def _shui5(self, posts, landing, keyword="契约词", **kw):
+        return SH.search_native(keyword, size=5, session=self._Shui5Session(posts, landing),
+                                gap=0, **kw)
+
+    def _chinatax(self, titles, total, keyword="契约词", **kw):
+        resp = _Search5Resp(titles, total)
+        with mock.patch.object(WS.tax_http, "attempt", return_value=(resp, "", False)), \
+             mock.patch.object(WS.tax_http, "new_log", return_value=[]):
+            return WS.search_chinatax(keyword, size=10, **kw)
+
+    def _chinatax_failed(self, err, keyword="契约词"):
+        with mock.patch.object(WS.tax_http, "attempt", return_value=(None, err, False)), \
+             mock.patch.object(WS.tax_http, "new_log", return_value=[]):
+            return WS.search_chinatax(keyword, size=10)
+
+    def _wechat(self, html, keyword="契约词"):
+        fake = _WxSession(_WxResp(html, "https://weixin.sogou.com/weixin?type=2&query=x", 200))
+        old = W._sogou_get
+        try:
+            W._sogou_get = lambda sess, u, **kw: fake.get(u)
+            return W.search_wechat(keyword, size=3)
+        finally:
+            W._sogou_get = old
+
+    def _sogou(self, html, err="", blocked=False, keyword="契约词"):
+        with mock.patch.object(SOG, "_cache", tax_cache.CacheManager(enabled=False)), \
+             mock.patch.object(SOG, "_STATE_PATH",
+                               Path(tempfile.mkdtemp()) / "state.json"), \
+             mock.patch.object(SOG, "SEARCH_MIN_GAP", 0), \
+             mock.patch.object(SOG, "_fetch",
+                               return_value=(html, "https://www.sogou.com/web?query=x",
+                                             err, blocked)):
+            return SOG.sogou_search(keyword, site="shui5.cn", size=5)
+
+    def _ctax(self, resp, keyword="契约词", **kw):
+        s = _CtaxSession({CTAX_SEARCH: _CtaxResp(resp)})
+        with mock.patch.object(CT.time, "sleep"):
+            return CT.search_ctax(keyword, size=5, session=s, **kw)
+
+    def _ctax_http500(self, keyword="契约词"):
+        s = _CtaxSession({CTAX_SEARCH: _CtaxResp("{}", status=500)})
+        with mock.patch.object(CT.time, "sleep"):
+            return CT.search_ctax(keyword, size=5, session=s)
+
+    def _agg(self, *, sogou=None, shui5=None, wechat=None):
+        ok = lambda n: {"total": n, "results": [{"title": "财税〔2025〕1号",
+                                                 "url": "https://x.test/a"}] if n else []}
+        with mock.patch.object(AGG, "search_tax", return_value=ok(1)), \
+             mock.patch.object(AGG, "search_chinatax", return_value=ok(1)), \
+             mock.patch.object(AGG, "sogou_search",
+                               return_value=sogou if sogou is not None else ok(1)), \
+             mock.patch.object(AGG, "search_shui5",
+                               return_value=shui5 if shui5 is not None else ok(0)), \
+             mock.patch.object(AGG, "search_wechat",
+                               return_value=wechat if wechat is not None else ok(0)), \
+             mock.patch.object(AGG, "search_ctax", return_value=ok(1)):
+            return AGG.aggregate_search("契约词", size=5)
+
+    def _gapped(self, r):
+        return {g["source"] for g in r["gaps"]}
+
+    # ── 逐源：合法空档 ──────────────────────────────────────────────
+    def test_fgk_legal_zero_hit_carries_the_key(self):
+        r = self._fgk_scan(0, {})
+        self.assertTrue(r.get("_zero_hit"),
+                        "翻完未筛出是扫描结论，不带这一枚就被读成取数失败")
+        self.assertTrue(r.get("_error"), "那句成因仍要交出去：翻了几页、站点共几条命中")
+        self.assertFalse(tax_http.is_fetch_failure(r))
+        self.assertIn("未筛出法规库条目", tax_http.empty_note(r))
+
+    def test_npc_legal_zero_hit_carries_the_key(self):
+        r = self._npc('{"total":0,"rows":[],"code":200,"msg":"查询成功"}', "契约零命中甲")
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_zero_hit"),
+                        "NPC 原来回的是裸 total=0，消费面分不清它与接口异常")
+        self.assertFalse(tax_http.is_fetch_failure(r))
+
+    def test_shui5_legal_zero_hit_carries_the_key(self):
+        r = self._shui5(["<div>%s</div>" % SH.NO_RESULT_MARK], self.RESULT_URL)
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_zero_hit"),
+                        "站点明说没搜到＝一轮跑成、答案 0 条；_status 那句两种成因说的是参数档位")
+        self.assertFalse(tax_http.is_fetch_failure(r))
+
+    def test_chinatax_legal_zero_hit_carries_the_key(self):
+        r = self._chinatax([], 0)
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_zero_hit"))
+        self.assertFalse(tax_http.is_fetch_failure(r))
+
+    def test_chinatax_page_beyond_the_last_page_is_a_legal_empty(self):
+        r = self._chinatax([], 3, page=9)
+        self.assertTrue(r.get("_zero_hit"), "翻过末页是正常收尾")
+        self.assertIn("已翻过末页", tax_http.empty_note(r))
+
+    def test_chinatax_empty_page_inside_the_last_page_is_not_a_legal_empty(self):
+        """接口报了命中数却没给清单：既不是失败也不算跑成，别打 _zero_hit。"""
+        r = self._chinatax([], 3, page=1)
+        self.assertFalse(r.get("_zero_hit"))
+        self.assertIn("不能据此说库里没有", r["_empty_reason"])
+
+    def test_wechat_legal_zero_hit_carries_the_key(self):
+        r = self._wechat(self.WX_ZERO_HTML)
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_zero_hit"))
+        self.assertFalse(tax_http.is_fetch_failure(r))
+
+    def test_sogou_legal_zero_hit_carries_the_key(self):
+        r = self._sogou("<html><body><p>没有找到相关内容</p></body></html>")
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_zero_hit"))
+        self.assertFalse(tax_http.is_fetch_failure(r))
+
+    def test_ctax_legal_zero_hit_carries_the_key_and_still_no_error(self):
+        r = self._ctax(_ctax_json([], found=0))
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_zero_hit"))
+        self.assertNotIn("_error", r, "这一档老钉（:3987）不许带 _error，只补键")
+        self.assertFalse(tax_http.is_fetch_failure(r))
+
+    # ── 逐源：真失败 ────────────────────────────────────────────────
+    def test_fgk_request_failure_is_still_a_failure(self):
+        r = self._fgk_scan(62, {1: 10}, errors={2: "HTTP 500"})
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertTrue(tax_http.is_fetch_failure(r))
+
+    def test_npc_failure_is_an_exception_not_an_envelope(self):
+        """NPC 的失败走 raise，契约不为此新增第三种形状——这条钉住边界。"""
+        with self.assertRaises(RuntimeError):
+            self._npc('{"msg":"系统异常","code":500}', "契约失败甲")
+
+    def test_shui5_landing_without_searchid_is_a_failure(self):
+        r = self._shui5(["<html><body>既没有提示也没有结果区</body></html>"], SH.SEARCH_FORM)
+        self.assertTrue(r.get("_fetch_failed"),
+                        "落点里没有 searchid＝这一轮没取到，原来只有一句 _status")
+        self.assertTrue(tax_http.is_fetch_failure(r))
+
+    def test_shui5_waf_page_is_a_failure(self):
+        page = ('<textarea id="renderData">{"arg1":"%s"}</textarea>' % ("A" * 40))
+        r = self._shui5([page], self.RESULT_URL)
+        self.assertTrue(r.get("_fetch_failed"),
+                        "WAF 那一支也要带键，否则判据只能退回去认 _status 前缀")
+        self.assertTrue(tax_http.is_fetch_failure(r))
+
+    def test_shui5_unknown_column_is_a_failure(self):
+        r = self._shui5([], self.RESULT_URL, classid="这一栏不在表里")
+        self.assertTrue(r.get("_fetch_failed"), "参数在发出前就被拦掉也是没取到")
+        self.assertTrue(tax_http.is_fetch_failure(r))
+
+    def test_shui5_request_exception_is_a_failure(self):
+        class Boom:
+            def post(self, url, **kw):
+                raise SH.requests.RequestException("连接被重置")
+
+        r = SH.search_native("契约词", size=5, session=Boom(), gap=0)
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertTrue(tax_http.is_fetch_failure(r))
+
+    def test_chinatax_transport_error_is_a_failure(self):
+        r = self._chinatax_failed("SSLError: 连接重置")
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertTrue(tax_http.is_fetch_failure(r))
+
+    def test_wechat_restructured_page_is_a_failure(self):
+        r = self._wechat(self.WX_BROKEN_HTML)
+        self.assertTrue(r.get("_fetch_failed"),
+                        "既没结果块也没无结果提示＝页面改版，不能读成库里没有")
+        self.assertTrue(tax_http.is_fetch_failure(r))
+
+    def test_sogou_breaker_is_a_failure(self):
+        r = self._sogou("", err="搜狗熔断中：约 600 秒后到期")
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertTrue(tax_http.is_fetch_failure(r))
+
+    def test_ctax_http_500_on_the_first_page_is_a_failure(self):
+        r = self._ctax_http500()
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertTrue(tax_http.is_fetch_failure(r))
+
+    # ── 消费面：判据换掉之后两种 0 条走两条路 ──────────────────────────
+    def test_rows_and_error_hands_a_legal_empty_back_as_an_empty_round(self):
+        rows, err, partial = ANS._rows_and_error(
+            {"results": [], "total": 0, "_zero_hit": True,
+             "_error": "翻完前 1 页总局检索结果（共 4822 条命中）未筛出法规库条目"})
+        self.assertEqual(([], "", ""), (rows, err, partial),
+                         "第二枚非空就会被 gather 记进 errors 与 rounds_done[].failed")
+
+    def test_rows_and_error_still_voids_a_real_failure(self):
+        rows, err, partial = ANS._rows_and_error(
+            {"results": [], "total": None, "_error": "HTTP 500", "_fetch_failed": True})
+        self.assertEqual(([], "HTTP 500", ""), (rows, err, partial))
+
+    def test_rows_and_error_keeps_the_old_fallback_for_unmarked_envelopes(self):
+        rows, err, _ = ANS._rows_and_error({"results": [], "_error": "连接超时"})
+        self.assertEqual(([], "连接超时", ""), (rows, err, ""),
+                         "没打键的信封按失败兜底：宁可多报一次，不静默")
+
+    def test_aggregator_does_not_gap_a_legal_empty(self):
+        r = self._agg(sogou={"results": [], "total": 0, "_zero_hit": True,
+                             "_error": "翻完未筛出法规库条目"})
+        self.assertNotIn("sogou", self._gapped(r),
+                         "把「没有」记成「缺了这一层」，读者会去放宽检索而不是接受空答")
+
+    def test_aggregator_still_gaps_a_real_failure(self):
+        r = self._agg(sogou={"results": [], "total": None, "_error": "HTTP 500",
+                             "_fetch_failed": True})
+        self.assertIn("sogou", self._gapped(r))
+
+    # ── 两枚键互斥：并列时判据必须取失败那一侧 ────────────────────────────
+    def test_both_keys_on_one_envelope_read_as_failure(self):
+        """同时挂两枚键说明源侧写错了；判据不许因此把接口挂了答成库里没有。
+
+        2026-11-25 首版判据先看 `_zero_hit` 短路，`tax_sogou._empty` 恰好经
+        `_payload` 打了 `_zero_hit` 再叠 `_fetch_failed`，熔断那轮被读成合法
+        空档——用例 `test_sogou_breaker_is_a_failure` 撞出来的。源侧修掉了碰撞，
+        这一枚把判据本身的退化方向钉住，否则次序改回去也没人报警。
+        """
+        self.assertTrue(tax_http.is_fetch_failure({"_zero_hit": True,
+                                                   "_fetch_failed": True}),
+                        "并列时取失败侧：多报一次看得见，少报一次是静默")
+        self.assertFalse(tax_http.is_fetch_failure({"_zero_hit": True}))
+        self.assertTrue(tax_http.is_fetch_failure({"_fetch_failed": True}))
+
+    def test_no_source_envelope_carries_both_keys(self):
+        """逐源实测：同一只信封上不许两枚键并存（契约的互斥面）。"""
+        both = []
+        empties = [
+            ("fgk", lambda: self._fgk_scan(0, {})),
+            ("npc", lambda: self._npc('{"total":0,"rows":[],"code":200,"msg":"查询成功"}',
+                                      "契约零命中甲")),
+            ("shui5", lambda: self._shui5(["<div>%s</div>" % SH.NO_RESULT_MARK],
+                                          self.RESULT_URL)),
+            ("chinatax", lambda: self._chinatax([], 0)),
+            ("wechat", lambda: self._wechat(self.WX_ZERO_HTML)),
+            ("sogou", lambda: self._sogou("<html><body><p>没有找到相关内容</p></body></html>")),
+            ("ctax", lambda: self._ctax(_ctax_json([], found=0))),
+        ]
+        failures = [
+            ("fgk", lambda: self._fgk_scan(62, {1: 10}, errors={2: "HTTP 500"})),
+            ("shui5", lambda: self._shui5(["<html><body>既没有提示也没有结果区</body></html>"],
+                                          SH.SEARCH_FORM)),
+            ("chinatax", lambda: self._chinatax_failed("SSLError: 连接重置")),
+            ("wechat", lambda: self._wechat(self.WX_BROKEN_HTML)),
+            ("sogou", lambda: self._sogou("", err="搜狗熔断中：约 600 秒后到期")),
+            ("ctax", lambda: self._ctax_http500()),
+        ]
+        for name, make in empties + failures:
+            r = make()
+            if "_zero_hit" in r and "_fetch_failed" in r:
+                both.append(name)
+        self.assertEqual([], both, "两枚键并存时判据只能赌先后次序，源侧必须只挂一枚")
+
+
 # ── 用例自身的能力自检：规则不能永远绿 ─────────────────────────────────────
 class TestRulesCanActuallyFail(unittest.TestCase):
     """把规则作用在构造的反例上，确认它真的拦得住。"""

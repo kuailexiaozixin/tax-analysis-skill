@@ -12,13 +12,13 @@ docs.maoyanqing.com 只是一个内容站，官方没有提供技能件，所以
 | 项 | 值 |
 |---|---|
 | 站点 | `https://docs.maoyanqing.com`（VuePress 静态站，Tencent EdgeOne 托管） |
-| robots.txt | `User-agent:* / Disallow:`（全放行），并声明 `Sitemap: /sitemap.xml` |
-| sitemap.xml | 1,249 页，逐页带 `lastmod`、`changefreq=daily`；整站 Last-Modified 2026-09-28（在维护） |
-| 五大域页数 | accounting 612 / auditing 342 / control 112 / appraisal 92 / securities 90 |
+| robots.txt | `User-agent:* / Disallow:`（全放行），并声明 `Sitemap: /sitemap.xml`（2026-11-26 复点：200、73 字节、纯 LF，逐行 `User-agent:*`／`Disallow:`／空行／`Sitemap:`） |
+| sitemap.xml | 1,242 页（2026-11-26 复点 loc 数；旧记 1,249 是 2026-09-29 那天的数），逐页带 `lastmod`、`changefreq=daily`（1242 枚全 daily）；整站 Last-Modified 现为 2026-11-24（旧记 2026-09-28）⇒ 站点在维护这一条成立，日期要跟着换 |
+| 五大域页数 | 2026-11-26 复点：accounting 607 / auditing 342 / control 112 / appraisal 90 / securities 90（合计 1241，与 loc 1242 差 1 枚是非五域路径）；旧记 612/342/112/92/90 是 2026-09-29 的数 |
 | 本目录文件 | `SKILL.md`（技能说明）、`maodocs.py`（纯标准库取文脚本） |
-| `maodocs.py` SHA-256 | `0de9f8a6ad6c494d6db6274cf573198399f295b3b948751b70cda4d4b6826a34`（截至本机 2026-09-29 版本） |
+| `maodocs.py` SHA-256 | `b8e54c4915ea4b6fb44fae39f200828dc5d867b74ddb8ed2d813693fc00be480`（2026-11-26 现算）|
 | 依赖 | 仅 Python 标准库 + HTTPS 出站；**不调用任何模型，不消费任何模型额度** |
-| 抓取时间 | 2026-09-29 |
+| 抓取时间 | 2026-09-29；2026-11-26 站点面复量一轮（`.tmp-inspect/probe35a-run.txt`、`probe35d-run.txt`、`probe35e-run.txt`）|
 
 ## 与税屋取法的区别（为什么这里没有过 WAF 那一段）
 
@@ -35,7 +35,7 @@ MaoDocs **无前置防护**：直连 curl/urllib 即返 200 带全文。实测�
 |---|---|---|
 | **文号不证明版次** | `cas/02.html` 标题带"（财会〔2014〕14号）"、正文是 2014 修订后措辞；同分类 `cas/01.html` 仍带"（财会〔2006〕3号）" | 引用只写规范名＋条款号；与 chenyiwei-bbs 的 `docNo` 陷阱同源，见该目录 NOTE.md |
 | **"时效性：现行有效"是站方录入** | 详情页发文信息块带"时效性：现行有效"文字，非接口状态位、无修订链 | 不接进 `tax_evidence.judge_validity`；别据此写"经判定现行有效" |
-| **索引页混挂全局导航** | 分类索引页 HTML 同时含站点全局导航（会计法/证券法/注册会计师法/企业会计制度）与本类子条目 | 脚本 `search` 只认 `/{分类前缀}/` 下的链接；否则"准则""法"这类词会把导航项当命中带回 |
+| **索引页混挂全局导航** | 分类索引页 HTML 同时含站点全局导航与本类子条目（2026-11-26 复点 `/accounting/ent/cas/`：`<a>….html` 93 枚，本类前缀内 88、前缀外 5） | 脚本 `search` 只认 `/{分类前缀}/` 下的链接；反事实实测（同一天）：不滤前缀时含「法」的会带回 4 条导航——会计法/注册会计师法/证券法/资产评估法，含「制度」带回 1 条（企业会计制度），含「准则」44 条全在本类内；生产 `search("cas","法")` total=0 ⇒ 过滤真的在挡东西 |
 | **一个准则可能是一整篇、不按主题分页** | `cass`（小企业会计准则）本类只有 2 页：正文 + 附录（会计科目/账务处理/报表）；搜"存货"返回 0 是**确实没有单独存货篇**，不是失败 | 空结果先按分类粒度判断，别当取数失败；要按主题找应先确认该系列是否分篇 |
 | **`garr` 是跨专题大类** | `securities/garr/` 下按 accounting/auditing/appraisal/issuing/listing/overseas… 分子目录，原生 38 篇；搜"减持"返回 0 因该站此分类无此标题篇 | 命中不稳时先 `search garr ""` 列全类再定位；不要退回 搜狗 broad-web |
 | **Git Bash 路径改写** | `fetch "/accounting/ent/cas/02.html"` 里以 `/` 开头的参数被 MSYS 改写成 `D:/Git/accounting/...` → 404 | 相对路径要配 `MSYS_NO_PATHCONV=1`，或直接传完整 URL（脚本对 `http` 开头不做拼接） |
@@ -55,3 +55,13 @@ chenyiwei-bbs。两者都不进六源、不进母技能的依据定级，触发�
 `SKILL.md` 层级下挖那一层的末尾与 `references/out_of_library_layers.md`。
 
 **本技能不自行决定何时调它。**
+
+### 关于 `maodocs.py` 那枚哈希为什么一直对不上
+
+- 声明的 `0de9f8a6…` 是 `9ab4604`（2026-09-29 接入 MaoDocs）那份 8177 字节的 blob，当时写进 NOTE 就对。
+- `4ecd192`（2026-10-04 技能文档去历史化）把 `maodocs.py:166` 那句 WAF 错误文案从
+  「该站此前无前置防护」改成「这一向不设前置防护，取到这一页说明是被拦而非空页」，
+  文件变 8222 字节 ⇒ 哈希换值，但 NOTE 那一行没人跟着换，从此长期对不上。
+- 行为没变（改的是给用户看的一句措辞），所以这一处不是取数缺陷，是**声明过期**。
+  现在这行按盘上现算值写，后续脚本再改动时同样要换这一枚——`tests/` 里已有一条用例
+  把「NOTE 声明的 `*.py` SHA-256 必须等于盘上现算」钉住，对不上会直接报红。

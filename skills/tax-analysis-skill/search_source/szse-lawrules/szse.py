@@ -16,7 +16,9 @@
      废止公告。这类是 build 的默认通道。
 
   2. 运行时模板渲染（需浏览器）——交易所"本所业务规则"（rule/stock、rule/bond…）
-     的页面只挂 <template> 与 _.each(data,…)，data 由前端二次拉取，直连只返回空壳。
+     的页面只挂 _.each(data,…) 这套 EJS 模板：占位锚直接躺在
+     <% if …%> 与 <%}else%> 两个分支里（2026-11-26 实测页内没有
+     <template> 标签），data 由前端二次拉取，直连只返回模板本身。
      这类走母技能 scripts/tax_browser.py 的 BrowserSession.read_html()（引擎既有能力，
      不新增依赖）。playwright 不在本机时 build 会跳过这些通道并在回显里写清原因。
 
@@ -167,20 +169,36 @@ def _strip_comments(page: str) -> str:
 
 def _parse_rendered(page: str) -> list:
     """解析浏览器渲染后的页面：每条规则是 <a class=…art-list-link… href title>
-    锚点，配同一条目里的 <span class="time">日期。模板注释残留要先剔掉，
-    否则把注释里的占位锚点也当命中。"""
+    锚点，配同一条目里的 <span class="time">日期。
+
+    两道拦截，缺一都会静默入库（2026-11-26 实测 rule/stock/trade/index.html 那
+    30674 字节里有三枚 art-list-link：一枚在 HTML 注释里、两枚躺在 EJS 模板分支
+    `<% if (item.doctype === 'bmp') …{%>` / `<%}else{%>` 内，不在注释里）：
+
+      1. 注释里的占位锚 —— `_strip_comments` 剔得掉。
+      2. 模板分支里的占位锚 —— 用「title 或 url 含 `<%`」判掉。
+
+    第二道必须留：浏览器起了但页面 JS 没跑完时，`_enumerate_browser` 拿到的是模板
+    本身，items 非空 ⇒ 既不报错也不收尾，`<%=replaceTitle(item.doctitle)%>` 这类
+    占位串会一路翻页写进 szse_index.json 并随索引对外分发。丢掉它们之后直连解出
+    0 条，与 NOTE 那句「直连只返回空壳」对齐。general/bond 两页同形（各 2 枚）。
+    """
     clean = _strip_comments(page)
     out = []
     # 以 art-list-link 锚点为锚，向后取最近的 time 作为发布日期
     for m in re.finditer(
             r'<a class="[^"]*art-list-link[^"]*"\s+href="([^"]+)"\s+title="([^"]*)"',
             clean):
+        href = _html.unescape(m.group(1)).strip()
+        title = _html.unescape(m.group(2)).strip()
+        if "<%" in href or "<%" in title:
+            continue          # 未渲染的 EJS 占位锚，不是条目
         tail = clean[m.end():m.end() + 400]
         md = re.search(r'class="time">\s*([0-9]{4}-[0-9]{2}-[0-9]{2})', tail)
         out.append({
-            "title": _html.unescape(m.group(2)).strip(),
+            "title": title,
             "date": md.group(1) if md else "",
-            "url": m.group(1),
+            "url": href,
         })
     return out
 

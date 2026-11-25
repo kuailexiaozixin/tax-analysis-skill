@@ -43,6 +43,7 @@
 """
 
 import importlib
+import hashlib
 import re
 import sys
 import unittest
@@ -434,6 +435,172 @@ class TestSymbolRefs(unittest.TestCase):
         self.assertTrue(SYM_RE.search("`tax_search.py`"))
         self.assertEqual(symbol_gaps([("x.md", "见 `tax_search.py`")],
                                      {"tax_search": self.modules.get("tax_search")}), [])
+
+
+# ── 6 子技能自己声明的文件哈希可核对 ────────────────────────
+
+# 子技能 NOTE 的「收录来源」表里会写一行文件哈希，读者拿它判断"盘上这份脚本还是不是
+# 文档描述的那一份"。这一行一旦没人复算，就会长期停在旧值上：2026-11-26 实测
+# `maodocs/NOTE.md` 声明的 `0de9f8a6…` 与盘上 `b8e54c49…` 对不上已经一个多月
+# （中途 `4ecd192` 改过 maodocs.py 一句 WAF 文案，声明没跟着换），而文档读起来毫无异常。
+# 这一层只问"声明与盘上是否同源"，不问脚本内容对不对。
+HEX64_RE = re.compile(r"\b[0-9a-f]{64}\b")
+BACKTICK_TOKEN_RE = re.compile(r"`([^`]+)`")
+
+
+def declared_hashes(text):
+    """从一份 NOTE 的表格里解出 [(声明值, 目标文件名, 行号)]。
+
+    两种写法都认：
+
+      | `maodocs.py` SHA-256 | `<64 位>`（…） |
+      | SHA-256 | `<64 位>` |          ← 目标名取上面「文件」那一行
+
+    正文里讲 SHA-256 的句子不算（只认以 `|` 开头的表格行），否则 maodocs 末尾那段
+    「NOTE 声明的 `*.py` SHA-256 必须等于盘上现算」会被当成一条声明。
+    """
+    out = []
+    named = None
+    for i, line in enumerate(text.splitlines(), 1):
+        s = line.strip()
+        if not s.startswith("|"):
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        head = cells[0]
+        if "SHA-256" not in head and "SHA256" not in head:
+            if head in ("文件", "本目录文件"):
+                toks = BACKTICK_TOKEN_RE.findall(cells[1])
+                named = toks[0] if toks else None
+            continue
+        toks = [t for t in BACKTICK_TOKEN_RE.findall(head) if "." in t]
+        target = toks[0] if toks else named
+        m = HEX64_RE.search(cells[1])
+        if target and m:
+            out.append((m.group(0), target, i))
+    return out
+
+
+def hash_gaps(pairs, overrides=None):
+    """pairs: [(相对路径, NOTE 的 Path, 文本)]；overrides: {相对路径: 文本} 供变异用。"""
+    overrides = overrides or {}
+    gaps = []
+    for rel, p, text in pairs:
+        for value, name, ln in declared_hashes(text):
+            f = p.parent / name
+            if not f.exists():
+                gaps.append(f"{rel}:{ln} 声明了 {name} 的哈希，但该文件不存在")
+                continue
+            if name in overrides:
+                disk = hashlib.sha256(overrides[name].encode("utf-8")).hexdigest()
+            else:
+                disk = hashlib.sha256(f.read_bytes()).hexdigest()
+            if disk != value:
+                gaps.append(f"{rel}:{ln} 声明 {name} 是 {value[:12]}…，盘上是 {disk[:12]}…")
+    return gaps
+
+
+class TestDeclaredFileHashes(unittest.TestCase):
+    """NOTE 声明的哈希要与盘上现算一致；不一致时要么改脚本要么改声明，不能两头都不动。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pairs = [(str(p.relative_to(ROOT)), p, p.read_text(encoding="utf-8"))
+                     for p in docs() if p.name == "NOTE.md"]
+
+    def test_every_declared_hash_matches_the_file_on_disk(self):
+        self.assertEqual(hash_gaps(self.pairs), [])
+
+    def test_the_three_known_declarations_are_all_parsed(self):
+        """语料里到底声明了几枚，用例自己得数得出来——一枚都解不到时这条会红，
+        否则「全部对得上」只是因为什么都没查。"""
+        got = {(p.parent.name, name) for _r, p, t in self.pairs
+               for _v, name, _l in declared_hashes(t)}
+        self.assertIn(("maodocs", "maodocs.py"), got)
+        self.assertIn(("szse-lawrules", "szse.py"), got)
+        self.assertIn(("chenyiwei-bbs", "SKILL.md"), got)
+
+    def test_mutation_stale_declaration_is_caught(self):
+        """把 maodocs 那行换回 2026-09-29 的旧值（真发生过的漂移），必须报红。"""
+        target = next((r, p, t) for r, p, t in self.pairs if p.parent.name == "maodocs")
+        stale = target[2].replace(
+            hashlib.sha256((target[1].parent / "maodocs.py").read_bytes()).hexdigest(),
+            "0de9f8a6ad6c494d6db6274cf573198399f295b3b948751b70cda4d4b6826a34", 1)
+        self.assertNotEqual(stale, target[2], "声明行里已经是旧值了，注入点要先重选")
+        gaps = hash_gaps([(target[0], target[1], stale)])
+        self.assertTrue(any("maodocs.py" in g for g in gaps), f"旧哈希没被报红：{gaps}")
+
+    def test_mutation_missing_target_file_is_a_gap_not_a_skip(self):
+        broken = [("x/NOTE.md", doc_dir("maodocs"),
+                   "| `nope.py` SHA-256 | `"
+                   + "a" * 64 + "` |")]
+        self.assertEqual(len(hash_gaps(broken)), 1)
+
+
+class TestSzseRenderedAnchors(unittest.TestCase):
+    """深交所业务规则页直连只回模板：模板分支里的占位锚不得当成规则条目。
+
+    现场证据（2026-11-26，`.tmp-inspect/szse-stock-direct.html`，30674 字节）：
+    `rule/stock/trade/index.html` 直连取回三枚 `art-list-link`——一枚在 HTML 注释里、
+    两枚躺在 EJS 模板的 `<% if …%>` 与 `<%}else%>` 两个分支里。`_strip_comments` 只挡
+    得住注释那一枚，另外两枚会被解成
+    `title='<%=replaceTitle(item.doctitle)%>'` 的假条目。`general`/`bond` 同形。
+    这不是"少收几条"，是**假条目静默进索引**：浏览器起了但 JS 没跑完时
+    `_enumerate_browser` 拿到模板本身、items 非空 ⇒ 既不报错也不收尾。
+    """
+
+    # 照存档页抄下来的那三段（分支一 / 分支二 / 注释），顺序与原文一致
+    TEMPLATE = (
+        '<div class="title">\n'
+        "<%if(!(item.doctype== 'html' || item.doctype== 'pdf') && "
+        "item.doctype !== 'link'){%>\n"
+        '  <a class="ellipsis art-list-link" href="<%=item.docpuburl%>" '
+        'title="<%=replaceTitle(item.doctitle)%>" target="_self">\n'
+        "<%}else{%>\n"
+        '  <a class="ellipsis art-list-link" href="<%=item.docpuburl%>" '
+        'title="<%=replaceTitle(item.doctitle)%>" target="_blank">\n'
+        "<%}%>\n"
+        '  <!-- <a class="ellipsis art-list-link" href="<%=item.docpuburl%>" '
+        'title="<%=replaceTitle(item.doctitle)%>" target="_blank"> -->\n'
+        "</div>\n"
+    )
+
+    RENDERED = (
+        '<div class="list">\n'
+        '  <a class="ellipsis art-list-link" '
+        'href="/www/lawrules/rule/stock/trade/t20260101_12345.html" '
+        'title="深圳证券交易所股票上市规则（2025 年修订）" target="_self">\n'
+        '  <span class="time">2026-01-01</span>\n'
+        "</div>\n"
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(doc_dir("szse-lawrules")))
+        import szse as mod
+        cls.szse = mod
+
+    def test_the_fixture_really_has_three_anchors(self):
+        """桩得先证明自己是那个形状：三枚锚、剔注释后还剩两枚。"""
+        self.assertEqual(self.TEMPLATE.count("art-list-link"), 3)
+        self.assertEqual(self.szse._strip_comments(self.TEMPLATE).count("art-list-link"), 2,
+                         "剔注释之后仍应是两枚（注释那一枚被剔掉）")
+
+    def test_template_branches_yield_no_items(self):
+        self.assertEqual(self.szse._parse_rendered(self.TEMPLATE), [])
+
+    def test_rendered_page_still_parses_with_its_date(self):
+        got = self.szse._parse_rendered(self.RENDERED)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["date"], "2026-01-01")
+        self.assertTrue(got[0]["title"].startswith("深圳证券交易所股票上市规则"))
+
+    def test_placeholder_is_dropped_without_touching_real_rows(self):
+        """同一页里既真有渲染条目又有占位锚时，只丢占位锚。"""
+        mixed = self.RENDERED + self.TEMPLATE
+        got = self.szse._parse_rendered(mixed)
+        self.assertEqual([r["title"] for r in got], ["深圳证券交易所股票上市规则（2025 年修订）"])
 
 
 if __name__ == "__main__":

@@ -976,6 +976,67 @@ def test_fetch_associations_error_paths():
     print("  [PASS] 关联三条失败路径都报 _error 且四组为空")
 
 
+def test_zero_segment_shell_blames_the_id_not_the_structure():
+    """接口回零段空壳＝这个 id 没被认下，不能报成「接口结构变了」也不能报「无关联」。
+
+    2026-11-26 实测（`.tmp-inspect\\probe34e-run.txt`）：同一份文件发纯数字
+    `5194010` 回两段、policyDocument 7 条；发 `c5194010`／`9999999`／`5194010x`
+    三档都是 `{"code":200,"results":{"data":{"total":0,"results":[]}}}` 这份
+    56 字节空壳。旧话术把这段与"结构变了"混在一句里，读的人会去查接口改版，
+    而真正该改的是自己发出去的入参。
+    """
+    shell = {"code": 200, "results": {"data": {"total": 0, "results": []}}}
+
+    def fake(method, url, **kw):
+        return _AssocResp(shell)
+
+    with _patched(**{"tax_http.request": fake}):
+        a = tax_fgk.fetch_associations("c5194010")
+    assert a["files"] == [] and a["qas"] == [], a
+    assert "没被接口认下" in a["_error"], a
+    assert "结构变了" not in a["_error"], a
+    assert "无关联" not in a["_error"], a
+    print("  [PASS] 零段空壳报成 id 未被认下，不冒充结构变了或无关联")
+
+
+def test_genuine_no_association_is_not_an_error():
+    """这份文件真没有关联：接口回完整结构、四组空数组——读数不带 _error。
+
+    2026-11-26 实测（`.tmp-inspect\\probe34d-run.txt`）：鉴定案例 `5248633`
+    无任何关联，接口仍回 41879 字节、policyDocument 键在位且是空数组。所以
+    「无关联」这一档根本不进 block is None 那一支，把它写进那句 _error 的
+    成因里等于给读人一条查不出结果的路。
+    """
+    payload = {"results": {"data": {"results": [
+        {"channel": []},
+        {"id": "5248633", "policyDocument": [], "policyInterpretation": [],
+         "policyGuidance": [], "policyQA": []}]}}}
+
+    def fake(method, url, **kw):
+        return _AssocResp(payload)
+
+    with _patched(**{"tax_http.request": fake}):
+        a = tax_fgk.fetch_associations("5248633")
+    assert "_error" not in a, a
+    assert a["files"] == [] and a["interpretations"] == [], a
+    assert a["guidances"] == [] and a["qas"] == [], a
+    print("  [PASS] 真无关联＝结构在、四组空、不带 _error")
+
+
+def test_assoc_groups_present_but_unnamed_is_called_structure_change():
+    """有段却没有 policyDocument 键：这才叫结构变了，句里要带上段数。"""
+    def fake(method, url, **kw):
+        return _AssocResp({"results": {"data": {"results": [
+            {"channel": []}, {"otherGroup": []}]}}})
+
+    with _patched(**{"tax_http.request": fake}):
+        a = tax_fgk.fetch_associations("5194010")
+    assert "结构变了" in a["_error"], a
+    assert "2 段" in a["_error"], a
+    assert "没被接口认下" not in a["_error"], a
+    print("  [PASS] 有段无分组键报结构变了并写明段数")
+
+
 def test_attach_associations_runs_per_entry_without_body():
     """attach_associations 给每条现拉一份关联，不依赖正文；就地写 entry['associations']。"""
     calls = []
@@ -1332,6 +1393,9 @@ def main():
         ("articleId 从 URL 取", test_article_id_from_url_forms),
         ("关联解析实测形态", test_fetch_associations_parses_measured_payload),
         ("关联失败路径报错", test_fetch_associations_error_paths),
+        ("零段空壳怪 id 不怪结构", test_zero_segment_shell_blames_the_id_not_the_structure),
+        ("真无关联不是错误", test_genuine_no_association_is_not_an_error),
+        ("有段无分组键报结构变", test_assoc_groups_present_but_unnamed_is_called_structure_change),
         ("逐条现拉关联", test_attach_associations_runs_per_entry_without_body),
         ("正文取回四态分开", test_body_status_names_the_four_outcomes),
         ("重试退避与尝试台账", test_retry_records_attempts_and_last_reason),

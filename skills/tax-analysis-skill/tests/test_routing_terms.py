@@ -553,6 +553,45 @@ def test_aging_and_effect_level_domains():
     print("  [PASS] 时效五档、效力等级八档逐档放行，域外写法（含 NPC 值域）报错")
 
 
+def test_aging_with_unrecorded_effect_level_blocked_before_send():
+    """效力等级那三档不录时效的族，与时效同发在发出前就报错——接口对这一组回
+    total=0，与"库里确实没有"同一个形态，放过去就是把必然为空的查询当成结论。
+
+    2026-11-25 二十四发实测（「增值税」基线 1910，逐发隔 2.6 秒，读 total 与同格
+    agingList；换「留抵退税」基线 58 交叉复认三档同发仍为 0）：
+      带时效桶的五档同发正常：法律 9→8、行政法规 10→7、国务院文件 9→7、
+                              税务部门规章 30→15、税务规范性文件 681→216
+      只有空桶的三档同发归零：财税文件 637→0、其他文件 62→0、工作通知 190→0
+    归零跟着效力等级这一族走、不跟着检索词走，所以判得死。读数在
+    search_source/chinatax/NOTE.md「效力等级与时效同发为什么归零」那一段。
+    """
+    assert W.AGING_UNRECORDED_LEVELS == ("财税文件", "其他文件", "工作通知"), \
+        W.AGING_UNRECORDED_LEVELS
+    # 三档 × 五档时效的全部组合都要拦住
+    for e in W.AGING_UNRECORDED_LEVELS:
+        for a in W.AGING_VALUES:
+            try:
+                W.build_filters(aging=a, effect_level=e)
+                raise AssertionError(f"必然为 0 的组合却放行：{e} × {a}")
+            except ValueError:
+                pass
+    # 另外五档同发是正常交集，不许顺手拦掉（拦了就是把能用的组合堵死）
+    for e in W.EFFECT_LEVEL_VALUES:
+        if e in W.AGING_UNRECORDED_LEVELS:
+            continue
+        got = W.build_filters(aging="全文有效", effect_level=e)
+        assert got == {"xxgkAging": "全文有效", "xxgkEffectLevel": e}, (e, got)
+    # 单独发这三档不受影响——它们是有货的（财税文件单发 637）
+    assert W.build_filters(effect_level="财税文件") == {"xxgkEffectLevel": "财税文件"}
+    assert W.build_filters(aging="全文有效") == {"xxgkAging": "全文有效"}
+    # 报错文案要说出去哪儿：换一个维度，时效回来读条目的 status
+    try:
+        W.build_filters(aging="全文有效", effect_level="财税文件")
+    except ValueError as ex:
+        assert "不录时效" in str(ex) and "status" in str(ex), str(ex)
+    print("  [PASS] 三档不录时效的族与时效同发拦住，另五档同发放行，单发两维照旧")
+
+
 def test_doc_year_help_says_the_document_number_year():
     """`--doc-year` 的帮文要说"发文字号里的年份"，不能写成"成文年份"。
 
@@ -913,6 +952,7 @@ def main():
         test_search5_zero_with_filters_says_it_might_be_too_narrow,
         test_build_filters_rejects_malformed_values,
         test_aging_and_effect_level_domains,
+        test_aging_with_unrecorded_effect_level_blocked_before_send,
         test_doc_year_help_says_the_document_number_year,
         test_file_labels_is_the_default_scope,
         test_all_labels_switch_reopens_the_whole_site,

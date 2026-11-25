@@ -118,6 +118,7 @@
 | 母 SKILL.md 过度膨胀——细节复写在主线里，改一处要四处同步（3.62.25 薄 SKILL.md） | 五批刀口把 743 行压到 495 行（48383 字节）：站点取数细节归 `search_source/<站>/`，判据与实测读数归 `references/`（`commands.md` 新增「六源各供什么、缺一路会漏掉哪一半」「依据不足时放宽的是检索，不是结论」「临时脚本与探针的纪律」三节，`evidence_grading.md` 立「收口判据与覆盖率」并补实务层名单那一段，`subskills/R&D-Expenses/SKILL.md` 补「科目级基准、互不换算」），主线只留选路判据与红线锚 | 每刀跑四道：自写白名单尺 `check_needles25.py`（针只认判据文件里真有断言的串，按赋值链算派生）＋仓里那把权威尺 `red_line_map.problems/orphan_anchors` 必须 0＋三条文档尺＋四套件与 `test_cases.py`（合跑 550 passed）；本轮全树 1486 passed、门禁 37/37。同一句在 SKILL 与 references 各留一遍会被逐字计数判重，所以下沉即删原句；「」式指针的整对必须与 `x.md` 同行且顺序不变，跨行折断或挪到句尾会让 `forward_pointers` 与 `test_cases.HOOKS` 双双漏判——本轮栽了五次，最后一次是全树抓回来的 |
 | 六个源各说各话："0 条"到底是库里没有还是没取到，消费面只能猜文本（3.62.26 统一出口标记契约） | `tax_http` 立契约两枚键——`_zero_hit`＝请求跑成、答案 0 条（可并存 `_error` 说明句），`_fetch_failed`＝请求层面没取到；判据 `is_fetch_failure` 先 `_fetch_failed`、再 `_zero_hit` 短路、最后拿 `_error` 兜底，兜底方向有意选多报一次失败（看得见会去补），不允许多报一次合法空档（把接口挂了答成库里没有）。六源逐源打键：fgk 合法零命中两支、npc `total==0`、shui5 `NO_RESULT_MARK` 与批量无 errs 支、chinatax 真 0 命中与翻页越界支（页内空清单不打，接口没给清单不算合法空档）、wechat 真 0 命中、sogou 真空档、ctax 站内零命中（老钉 :3987 不许带 `_error`，只补键）；失败侧补齐 shui5 WAF 页／无 searchid／请求异常／限流、wechat 改版页、sogou 熔断与反爬、ctax 首页取不到。四面消费同换判据：`_rows_and_error`、聚合层、`tax_related`、`tax_cases` | 常驻 `tests/test_source_defects.py::TestUnifiedExitMarkerContract` 26 条逐源钉两向 + 互斥面（`test_both_keys_on_one_envelope_read_as_failure`、`test_no_source_envelope_carries_both_keys`）。两处真缺陷是用例撞出来的：① `tax_sogou._empty` 经 `_payload` 先打了 `_zero_hit` 再叠 `_fetch_failed`，熔断被读成合法空档（改为失败分支 `pop("_zero_hit")`）；② 首版判据 `_zero_hit` 抢先短路，把次序改成失败优先才立得住。注入证伪两案各恰 1 红（`inject26c.py`，补丁先 `py_compile` 自证语法、`finally` 还原并核「新写法在位=True」）；整文件 379 passed、契约相关八文件 622 passed、全树 1486 passed、门禁 37/37。踩坑两条：`subprocess` 自拼 `env` 丢 `SYSTEMROOT` 令子进程报 `WinError 10106`（必须 `dict(os.environ)` 再覆盖两枚变量）；注入脚本 `write_bytes(repl)` 会整件覆盖（必须 `text.replace(needle, repl)`） |
 | 统一判据装上后仍有两层读法没对齐：点名文件的「0 条」被报成「通道没取成」（3.62.27 判据分层） | `scripts/tax_answer.py` 里 `locate_cited_document` 那支此前还认 `r.get("_fetch_failed") or r.get("_error")`，而法规库合法零命中正是「带 `_zero_hit` 又带一句 `_error` 说明」，于是库里明明答了 0 条却被折成 `channel-failed`，compose 的 cited_note 写「检索通道没取成…不是库里没有这一份」——**红线⑦的反向假陈述**：通道跑成了、答案是 0 条，读者却被告知去重跑，重跑一百次还是 0。改成 `tax_http.is_fetch_failure`；空档档的成因句由 `r.get("_empty_reason")` 换成 `H.empty_note`（fgk 那句写在 `_error` 上，老写法带不出来，state 只剩「未注明」）。端到端实测 state 由 `channel-failed｜…×3 枚候选词` 变 `no-hit｜…未筛出法规库条目…`，cited_note 改说「逐枚试检都是 0 条、可能是题名缺发文机关前缀或用了简称」。文号核对那一层（`_doc_number_in_library`）**有意不换**：它判的不是「这一轮计不计入底稿」而是「能不能据此说库里没有这份文件」；清单没给全（只带 `_empty_reason`）那一轮不足以否定存在性，所以它算失败，而契约兜底「没打键即认 `_error` 非空」会把老钉 （`tests/test_source_defects.py:1970-1988`：零命中带 `_error` ⇒ `not_in_library`、只有 `_fetch_failed` ⇒ `lookup_failed`）判红。分层理由写进函数注释，改它必须先读那两枚钉 | 新用例三枚进 `TestUnifiedExitMarkerContract`（现 29 passed）：合法零命中 ⇒ `no-hit` 且成因句在位；反向钉两档分开——纯失败 ⇒ `channel-failed`，带条目又有失败 ⇒ `partial`（首版把两档都钉成 `channel-failed` 是用例错，被 `if out:` 那条折档优先级打回）；第三枚直接钉 `_doc_number_in_library` 的三元返回本身（首版自造 `_cited_outcome` 映射被废弃——那不是被测函数的真形状）。注入证伪两案各恰 1 红（判据退回认文本、成因句退回只读 `_empty_reason`，红的都是同一枚新用例），`finally` 还原并核「新写法在位=True」。全树 1515 passed、门禁 37/37。踩坑：`edit` 漏 `file_path` 直接报缺必填参数 |
+| 站点报的 0 条里混着一档「这一维压根没录值」的必然为空，两维同发此前只在文档里劝（3.62.28 按档拦死） | `scripts/tax_web_search.py` 此前对 `--aging` 与 `--effect-level` 同发不设防，而 2026-11-25 二十四发实测把这件事从「两维别拼」收窄成「哪几档别拼」：八档效力等级逐一单发读 `total` 与同格 `agingList`（「增值税」× FILE_LABELS，基线 1910，逐发间隔 2.6 秒），**财税文件 637（桶只有空串 462+"null" 191）、其他文件 62（只有空串 63）、工作通知 190（只有空串 190）这三档名下不录时效**，配任一 `xxgkAging` 一律回 0；另五档同发是正常交集（法律 9→8、行政法规 10→7、国务院文件 9→7、税务部门规章 30→15、税务规范性文件 681→216）。换「留抵退税」（基线 58）交叉复认三档单发仍是空桶（财税文件 15＝空串 14+"null" 1、工作通知 9＝只有空串 9）、同发仍为 0——**跟着这一族走，不跟着检索词走**，所以判得死 | 据此立 `AGING_UNRECORDED_LEVELS` 三档常量，`build_filters` 在两维同给时发出前抛 `ValueError` 并说清换哪一维（按效力等级取清单就别带时效、时效回来读条目 `status`；要现行有效的某族文件就改用 `tax_type` 配时效，实测 159）；`tax_fgk.py` 共用同一枚 `filters_from_args`，两条 CLI 一起生效，`--effect-level` 帮文与 `references/commands.md`、`search_source/chinatax/NOTE.md` 三处同步改口（旧说法是「两维同发必然归零」，那是只有财税文件一档读数时以偏概全）。常驻用例一枚两向钉（三档拦死＋另五档不许顺手拦掉）：`tests/test_routing_terms.py::test_aging_with_unrecorded_effect_level_blocked_before_send`；注入证伪两案（整段失效、判据写反）各恰 1 红、控制组绿。踩坑：pwsh 下 argparse 帮文与 usage 打成 GBK 乱码，判据要看 rc 不看文本；全树 1516 passed、门禁 37/37 |
 
 ## 限流记录的实测台账
 
@@ -380,15 +381,27 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
 - **会计口径缺口靠词表认，认不到就没有第二道防线**。`tax_analyze.ACCOUNTING_SIGNALS`
   只收多字短语，词表外的说法不会报出来；子技能也不在 ④ 的聚合与 ⑧ 的定级里，
   `docNo` 与条文版次不一致这件事程序判不了，只能按硬规矩引"准则名＋条款号"。
-- **总局检索的效力等级与时效两维不能同时发**。检索词「增值税」下，
+- **总局检索的效力等级有三档不录时效，与时效同发已被程序拦死**。检索词「增值税」下，
   `xxgkEffectLevel=财税文件` 单发 636 条、`xxgkAging=全文有效` 单发 252 条，两个一起发
   是 0 条，把时效换成"已修改"同样是 0；而同一根时效轴配 `xxgkSonTaxPolicy=增值税`
   正常给 159 条，说明不是 AND 语义坏了。0 的成因在分面里直接读得出来：加上
   `xxgkEffectLevel=财税文件` 之后 `agingList` 只剩空串 468 条与字符串 `"null"` 192 条
   两桶——「财税文件」这一栏根本不录时效，与本文件前半部分
   `tax_answer.corroborate_validity_from_target` 那条是同一件事的两侧：那条管取回之后
-  怎么把状态补上，这条管发出去之前别把两维拼一起。程序拦不住谁去拼这条必然为零的
-  查询，而 0 条与"库里确实没有"在结果里长得一模一样。参数与分面的实测数字见
+  怎么把状态补上，这条管发出去之前别把两维拼一起。2026-11-25 二十四发把这件事从"两维不要拼"
+  收窄成"哪几档不能拼"：八档逐一单发读 `agingList`，只有 `财税文件`（637，桶只有空串 462
+  与 `"null"` 191）、`其他文件`（62，只有空串 63）、`工作通知`（190，只有空串 190）这三档
+  名下没有时效录入值，配任一 `xxgkAging` 都归零；另五档同发是正常交集（法律 9→8、行政法规
+  10→7、国务院文件 9→7、税务部门规章 30→15、税务规范性文件 681→216）。换「留抵退税」
+  （基线 58）交叉复认三档同发仍为 0（该词下单发 财税文件 15、`agingList` 只有空串 14 与
+  `"null"` 1；工作通知 9、桶只有空串 9），判据跟着效力等级这一族走而不是跟着检索词走。
+  同一轮里 `税务部门规章`×`全文有效` 在「留抵退税」下也回 0，但那一档没配单发读数，
+  不能当反例用——要复现判据请回「增值税」那一组。据此
+  `scripts/tax_web_search.py` 立了 `AGING_UNRECORDED_LEVELS` 三档常量，`build_filters` 在
+  拼参数阶段就抛 `ValueError`（`tax_fgk.py` 共用同一枚 `filters_from_args`，命令行两路一起生效），
+  报错说清换哪一维：按效力等级取清单就别带时效、时效回来读条目里的 `status`。常驻钉在
+  `tests/test_routing_terms.py::test_aging_with_unrecorded_effect_level_blocked_before_send`
+  （含"另五档不许顺手拦掉"那一向）。参数与分面的实测数字见
   `search_source/chinatax/NOTE.md`「二、search5 的可发参数与分面字段」。
 - **中国税网这一路的定级不认站点身份，只认标题形态**。`tax_evidence.PRACTICE_SOURCES`
   里没有这一站，`rank_of` 先按标题形态定档再按来源名兜底，所以一份报纸转载的现行公告

@@ -87,6 +87,10 @@ _HREF = re.compile(r"var\s+curHref\s*=\s*'([^']*)'")
 _TITLE_ACTIVE = re.compile(r"^\s*var\s+curTitle\s*=\s*'([^']*)'", re.M)
 _TIME = re.compile(r'class="time">\s*([0-9]{4}-[0-9]{2}-[0-9]{2})')
 _PAGES = re.compile(r"共\s*(\d+)\s*页")
+# 浏览器通道的页数不写成「共 N 页」：那串文本被两枚 span 切开
+# （`页&nbsp;&nbsp;共<span class="num-all">1</span>页`），_PAGES 在那类页上恒不
+# 命中（2026-11-26 实测 11 枚通道全这样）。站点自报的页数只认这一枚类名。
+_PAGES_R = re.compile(r'class="num-all">\s*(\d+)')
 
 
 def _ctx():
@@ -212,7 +216,20 @@ def _browser_session():
 
 
 def _enumerate_browser(rel: str, sess, max_pages: int) -> list:
-    """浏览器逐页渲染并解析 art-list-link 锚点（index.html → index_N.html）。"""
+    """浏览器逐页渲染并解析 art-list-link 锚点。
+
+    页码收尾只认站点自己写在 `class="num-all">` 里的那个数（2026-11-26 实测
+    11 枚通道全部自报「共 1 页」），而不是照 SSR 通道的写法去猜 `index_N.html`：
+    业务规则页的第二屏地址并不存在（`rule/stock/trade/index_1.html` 静态直发
+    404，浏览器里打开是 128738 字节的错误页、0 枚锚）。原先的猜法后果是良性的
+    ——第二发解出 0 条就 break，不会写脏数据，但每枚通道都白发一次错误页请求
+    （实测每通道 goto=2 次、约 10 秒）。改成读 num-all 以后一屏收工。
+
+    另一件实测到的事写在这里备忘：这些页面**混装别栏条目**，通道名只说明「这一
+    屏是从哪个页面枚举来的」，不说明条目归属（2026-11-26：stock 13 条里只有 5 条
+    在 rule/stock/trade/ 下、option 13 条里只有 1 条在 rule/derivative/ 下，其余
+    多是 disclosure/notice/general/ 的通知）。按通道筛结果时不要把它当分类。
+    """
     stem = rel.rsplit("/", 1)[0]
     items, seen = [], set()
     for pg in range(max_pages + 1):
@@ -233,6 +250,9 @@ def _enumerate_browser(rel: str, sess, max_pages: int) -> list:
                 items.append(it)
                 new += 1
         if new == 0:
+            break
+        tot = _PAGES_R.search(page) or _PAGES.search(page)
+        if tot and pg + 1 >= int(tot.group(1)):
             break
         time.sleep(PAGE_GAP)
     return items
@@ -283,7 +303,7 @@ def build(use_browser: bool, snapshot: bool, max_pages: int, only: str) -> dict:
                 index["channels"][alias] = {"name": cn, "render": "browser",
                                             "count": 0, "items": [],
                                             "_skipped": "playwright 未安装"}
-                notes.append("浏览器通道不可用：playwright 未安装（本机 2026-09-29 属实）")
+                notes.append("浏览器通道不可用：playwright 未安装")
             except Exception as e:
                 notes.append(f"{alias} 浏览器建索引失败：{str(e).splitlines()[0][:80]}")
 

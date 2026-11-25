@@ -603,5 +603,87 @@ class TestSzseRenderedAnchors(unittest.TestCase):
         self.assertEqual([r["title"] for r in got], ["深圳证券交易所股票上市规则（2025 年修订）"])
 
 
+class TestBrowserChannelPaging(unittest.TestCase):
+    """浏览器通道的页码收尾：只认站点自己写的那个数（2026-11-26 实测）。
+
+    实测在 `rule/stock/trade/index.html` 等 11 枚通道页上，分页那行渲染成
+    `当前第<span class="num-cur">1</span>页&nbsp;&nbsp;共<span
+    class="num-all">1</span>页`：既没有连续的「共 1 页」文本（旧的 `_PAGES`
+    匹配不到），第二屏地址 `index_1.html` 也压根不存在（静态 404、浏览器里
+    是 128738 字节的错误页）。当时每枚通道都要白发一次错误页请求。
+    """
+
+    ROW = ('  <a class="ellipsis art-list-link" '
+           'href="/www/lawrules/rule/stock/trade/t2026010{i}_1234{i}.html" '
+           'title="业务规则第{i}条" target="_self">\n'
+           '  <span class="time">2026-01-0{i}</span>\n')
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(doc_dir("szse-lawrules")))
+        import szse as mod
+        cls.szse = mod
+
+    def page(self, total, idx=0):
+        """造一枚渲染后的页面：一条条目 + 站点自报的页数（照实测 DOM 形状）。"""
+        head = '<div class="list">' + self.ROW.format(i=idx + 1) + '</div>'
+        nav = ('<div class="current-page">当前第'
+               '<span class="num-cur">' + str(idx + 1) + '</span>页'
+               '&nbsp;&nbsp;共<span class="num-all">' + str(total) + '</span>页</div>')
+        return head + nav
+
+    def test_the_paginator_text_defeats_the_legacy_regex(self):
+        """旧锚认不出这行文本 —— 所以才需要第二枚页码锚。"""
+        html = self.page(1)
+        self.assertIsNone(self.szse._PAGES.search(html))
+        self.assertEqual(self.szse._PAGES_R.search(html).group(1), "1")
+
+    def test_one_page_site_makes_exactly_one_request(self):
+        calls = []
+
+        class Sess:
+            def read_html(self, url):
+                calls.append(url)
+                return self.sz_page
+
+        s = Sess()
+        s.sz_page = self.page(1)
+        got = self.szse._enumerate_browser("rule/stock/trade/index.html", s, 40)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(len(calls), 1, "站点自报共 1 页时不该再猜第二屏地址：%s" % calls)
+        self.assertNotIn("index_1.html", calls[0])
+
+    def test_reported_page_count_is_honoured(self):
+        """自报 3 页就取到第 3 屏为止，不多发。"""
+        calls = []
+
+        class Sess:
+            def read_html(self, url):
+                calls.append(url)
+                return self.page_for(len(calls) - 1)
+
+        s = Sess()
+        s.page_for = lambda i: self.page(3, i)
+        got = self.szse._enumerate_browser("rule/stock/trade/index.html", s, 40)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(got), 3)
+
+    def test_empty_second_page_still_stops_cleanly(self):
+        """站点没写页数时，退回到旧行为：第二屏空就停，不报错也不越界。"""
+        calls = []
+        row = self.ROW.format(i=1)
+
+        class Sess:
+            def read_html(self, url):
+                calls.append(url)
+                if len(calls) == 1:
+                    return '<div class="list">' + row + '</div>'
+                return '<html><body>错误页</body></html>'
+
+        got = self.szse._enumerate_browser("rule/stock/trade/index.html", Sess(), 40)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(len(calls), 2)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

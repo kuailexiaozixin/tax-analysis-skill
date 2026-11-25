@@ -5588,6 +5588,83 @@ class TestUnifiedExitMarkerContract(unittest.TestCase):
                 both.append(name)
         self.assertEqual([], both, "两枚键并存时判据只能赌先后次序，源侧必须只挂一枚")
 
+    # ── 点名定位那一层：档位词必须跟着键走 ────────────────────────────────
+    def _locate(self, env):
+        """把一只预制信封喂给 locate_cited_document，带回 state（第三枚）。"""
+        real = ANS.FGK.search_fgk
+        try:
+            ANS.FGK.search_fgk = lambda kw, size=6, **kw2: dict(env)
+            return ANS.locate_cited_document("税收征管法")[2]
+        finally:
+            ANS.FGK.search_fgk = real
+
+    def test_locate_calls_a_legal_empty_no_hit_not_channel_failed(self):
+        """3.62.27 收的那条：通道跑成了、答案是 0 条，不许写成"没连上"。
+
+        fgk 的合法零命中带一句 `_error`（翻完前 N 页未筛出法规库条目）。locate
+        老写法读 `_error` 非空即失败，于是 state=channel-failed，compose 写出
+        「检索通道没取成…不是库里没有这一份：按 ⑦ 不能把没连上写成没有」——
+        红线⑦的反向假陈述，读者会去重跑那一轮，重跑一百次还是 0 条。
+        2026-11-25 探针 probe27b.py 实测到 state 与 cited_note 原文。
+        """
+        env = self._fgk_scan(0, {})
+        self.assertTrue(env.get("_zero_hit"), "前提：这一档是合法空档")
+        self.assertTrue(env.get("_error"), "前提：这一档带一句扫描结论")
+        state = self._locate(env)
+        self.assertTrue(state.startswith("no-hit"), state)
+        self.assertIn("未筛出法规库条目", state,
+                      "成因句要跟着进 no-hit 那一档，否则只剩"
+                      "「关键词：未注明」")
+
+    def test_locate_still_calls_a_real_failure_channel_failed(self):
+        """反向钉：真失败仍走失败档，别把这次改动读成放松判据。
+
+        两档分开钉：一枚条目都没取回 → channel-failed；取回过条目又有失败
+        → partial（`tax_answer.py` 折档的优先级：有条目时不算"这一轮没捞着"，
+        只补一句"这一轮不完整"）。断供那一档在真实 fgk 里必然带着已收的条目，
+        所以它落 partial 而不是 channel-failed——这是既有形状，本轮没动它。
+        """
+        pure = {"results": [], "total_hits": 62, "_error": "search5 HTTP 500",
+                "_fetch_failed": True}
+        self.assertTrue(tax_http.is_fetch_failure(pure))
+        state = self._locate(pure)
+        self.assertTrue(state.startswith("channel-failed"), state)
+        self.assertIn("HTTP 500", state)
+
+        with_rows = self._fgk_scan(62, {1: 10}, errors={2: "HTTP 500"})
+        self.assertTrue(tax_http.is_fetch_failure(with_rows))
+        state = self._locate(with_rows)
+        self.assertTrue(state.startswith("partial"), state)
+        self.assertIn("HTTP 500", state)
+
+    def test_library_lookup_keeps_its_own_criterion_on_purpose(self):
+        """文号核对那一层有意不换成 is_fetch_failure，这一枚把理由钉住。
+
+        `_doc_number_in_library` 判的是"能不能据此说库里没有这份文件"：清单没给全
+        （`_empty_reason`）时那一轮不足以否定存在性，所以它回一句失败说明——而契约
+        判据把只带 `_empty_reason` 的信封读成非失败。两层的判据本来就该不同（检索层
+        判这一轮计不计入底稿，本层判能不能下"没有"的结论），改动必须先读
+        :1970-1988 那两枚老钉，不许顺手统一成一把尺。
+        """
+        legal = {"results": [], "total_hits": 0, "_zero_hit": True,
+                 "_error": "翻完前 1 页未筛出法规库条目"}
+        self.assertFalse(tax_http.is_fetch_failure(legal), "前提：契约读它为非失败")
+        row, why, hits = ANS._doc_number_in_library("财税〔1999〕43号",
+                                                    want="财税〔1999〕43号",
+                                                    lookup=lambda t: dict(legal))
+        self.assertIsNone(row)
+        self.assertEqual("", why, "合法空档不许回失败说明，否则上层写 lookup_failed")
+        self.assertEqual(0, hits, "命中数要带出去给 tax_evidence 的零命中句用")
+
+        partial = {"results": [], "total_hits": 48, "_empty_reason": "接口没给清单"}
+        self.assertFalse(tax_http.is_fetch_failure(partial), "前提：契约读它为非失败")
+        row, why, hits = ANS._doc_number_in_library("财税〔1999〕43号",
+                                                    want="财税〔1999〕43号",
+                                                    lookup=lambda t: dict(partial))
+        self.assertIsNone(row)
+        self.assertTrue(why, "清单没给全不足以否定存在性，这一轮不能当「库里没有」用")
+        self.assertIsNone(hits)
+
 
 # ── 用例自身的能力自检：规则不能永远绿 ─────────────────────────────────────
 class TestRulesCanActuallyFail(unittest.TestCase):

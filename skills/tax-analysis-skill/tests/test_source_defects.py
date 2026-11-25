@@ -1339,6 +1339,76 @@ class TestNpcSharedBusinessGuard(unittest.TestCase):
         self.assertIn("业务失败", str(cm.exception))
 
 
+# ── ①b 法院两站的业务码：同一族病症、不同的成功值，不能套 NPC 那把尺 ──────
+class TestCourtSharedBusinessGuard(unittest.TestCase):
+    """裁判文书网与人民法院案例库都用 HTTP 200 装业务失败，但成功值是 code=0。
+
+    2026-11-25 首次实测（此前本机一次请求都没发过）：
+      案例库 POST /cpws_al_api/api/cpwsAl/search 匿名四发 + searchTop10 +
+        getGroupDatas + 左侧聚类，全部 200 / 30 字节 {"msg":"未登录","code":401}；
+        补 UA/Referer/X-Requested-With 不松墙；只有 recordSearchLog 用真 401。
+      文书网 POST /website/parse/rest.q4w 三发（空 body、只带 construct、
+        带明文假 ciphertext）全部 200 / 76 字节
+        {"code":9,"description":null,"secretKey":null,"result":null,"success":false}；
+        /api/fp/ah、/api/fp/cprq、/api/fp/gjjsClick 回 200 / 0 字节；
+        /down/isDown 200 / {"msg":"文书解码失败，无法下载!","code":1}。
+    判据先备好而不接源，是因为本仓栽过的不是「没接这个源」，而是「接了之后
+    把墙读成 0 条」——红线⑦那一族。探针 probe30g 实测：这六只原始信封喂现判据
+    is_fetch_failure 全 False、喂 tax_answer._rows_and_error 全读成 rows=0 无错，
+    也就是全部会被答成「库里没有」。
+    """
+
+    def test_helper_truth_table(self):
+        for payload, should_flag in (
+            ({"code": 0, "msg": "获取成功！"}, False),      # 案例库健康形状
+            ({"code": 0, "success": True, "result": {"datas": []}}, False),
+            ({"code": 401, "msg": "未登录"}, True),
+            ({"code": "401", "msg": "未登录"}, True),        # 字符串码也要认
+            ({"code": 9, "success": False, "result": None}, True),
+            ({"code": 1, "msg": "文书解码失败，无法下载!"}, True),
+            ({"success": False}, True),                     # 没有 code 也要认 success
+            ({"code": "0"}, False),                         # 字符串 0 不得发假警
+            ({"msg": "两枚键都没有"}, False),
+            ({}, False),
+        ):
+            with self.subTest(payload=payload):
+                self.assertEqual(should_flag,
+                                 tax_http.court_business_error(payload) is not None)
+
+    def test_helper_tolerates_non_dict(self):
+        """接口哪天回个 list／字符串／None（文书网那三枚 0 字节就是这种风险），判据不能自己先炸。"""
+        for bad in ([], "text", None, 5):
+            with self.subTest(value=bad):
+                self.assertIsNone(tax_http.court_business_error(bad))
+
+    def test_error_message_says_it_is_not_an_empty_result(self):
+        reason = tax_http.court_business_error({"code": 401, "msg": "未登录"})
+        self.assertIn("业务失败", reason)
+        self.assertIn("库里没有", reason, "得让读者看见这不是「没有」而是「没连上」")
+
+    def test_the_two_guards_are_not_one_ruler(self):
+        """NPC 认 200 为成功、法院两站认 0 为成功。合并任何一把都会误伤另一族。"""
+        healthy_court = {"code": 0, "msg": "获取成功！"}
+        healthy_npc = {"code": 200, "msg": "查询成功"}
+        self.assertIsNotNone(tax_http.npc_business_error(healthy_court),
+                             "NPC 那把尺会把案例库的正常响应拦下来——这正是不能合并的证据")
+        self.assertIsNotNone(tax_http.court_business_error(healthy_npc),
+                             "法院那把尺会把 NPC 的正常响应拦下来")
+        self.assertIsNone(tax_http.npc_business_error(healthy_npc))
+        self.assertIsNone(tax_http.court_business_error(healthy_court))
+
+    def test_require_court_ok_raises_instead_of_returning_empty(self):
+        with self.assertRaises(RuntimeError) as cm:
+            tax_http.require_court_ok({"code": 401, "msg": "未登录"})
+        self.assertIn("业务失败", str(cm.exception))
+        tax_http.require_court_ok({"code": 0, "msg": "获取成功！"})
+
+    def test_a_legal_zero_still_passes_the_court_guard(self):
+        """0 条命中是合法答案，判据不许把它拦成失败——否则红线⑦反过来犯一次。"""
+        self.assertIsNone(tax_http.court_business_error(
+            {"code": 0, "msg": "获取成功！",
+             "data": {"datas": [], "totalCount": 0}}))
+
 
 # ── ① NPC 闸要包住下载路径 ────────────────────────────────────────────────
 class TestNpcGateCoversDownload(unittest.TestCase):

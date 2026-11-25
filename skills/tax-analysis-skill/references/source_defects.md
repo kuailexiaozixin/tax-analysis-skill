@@ -120,6 +120,7 @@
 | 统一判据装上后仍有两层读法没对齐：点名文件的「0 条」被报成「通道没取成」（3.62.27 判据分层） | `scripts/tax_answer.py` 里 `locate_cited_document` 那支此前还认 `r.get("_fetch_failed") or r.get("_error")`，而法规库合法零命中正是「带 `_zero_hit` 又带一句 `_error` 说明」，于是库里明明答了 0 条却被折成 `channel-failed`，compose 的 cited_note 写「检索通道没取成…不是库里没有这一份」——**红线⑦的反向假陈述**：通道跑成了、答案是 0 条，读者却被告知去重跑，重跑一百次还是 0。改成 `tax_http.is_fetch_failure`；空档档的成因句由 `r.get("_empty_reason")` 换成 `H.empty_note`（fgk 那句写在 `_error` 上，老写法带不出来，state 只剩「未注明」）。端到端实测 state 由 `channel-failed｜…×3 枚候选词` 变 `no-hit｜…未筛出法规库条目…`，cited_note 改说「逐枚试检都是 0 条、可能是题名缺发文机关前缀或用了简称」。文号核对那一层（`_doc_number_in_library`）**有意不换**：它判的不是「这一轮计不计入底稿」而是「能不能据此说库里没有这份文件」；清单没给全（只带 `_empty_reason`）那一轮不足以否定存在性，所以它算失败，而契约兜底「没打键即认 `_error` 非空」会把老钉 （`tests/test_source_defects.py:1970-1988`：零命中带 `_error` ⇒ `not_in_library`、只有 `_fetch_failed` ⇒ `lookup_failed`）判红。分层理由写进函数注释，改它必须先读那两枚钉 | 新用例三枚进 `TestUnifiedExitMarkerContract`（现 29 passed）：合法零命中 ⇒ `no-hit` 且成因句在位；反向钉两档分开——纯失败 ⇒ `channel-failed`，带条目又有失败 ⇒ `partial`（首版把两档都钉成 `channel-failed` 是用例错，被 `if out:` 那条折档优先级打回）；第三枚直接钉 `_doc_number_in_library` 的三元返回本身（首版自造 `_cited_outcome` 映射被废弃——那不是被测函数的真形状）。注入证伪两案各恰 1 红（判据退回认文本、成因句退回只读 `_empty_reason`，红的都是同一枚新用例），`finally` 还原并核「新写法在位=True」。全树 1515 passed、门禁 37/37。踩坑：`edit` 漏 `file_path` 直接报缺必填参数 |
 | 站点报的 0 条里混着一档「这一维压根没录值」的必然为空，两维同发此前只在文档里劝（3.62.28 按档拦死） | `scripts/tax_web_search.py` 此前对 `--aging` 与 `--effect-level` 同发不设防，而 2026-11-25 二十四发实测把这件事从「两维别拼」收窄成「哪几档别拼」：八档效力等级逐一单发读 `total` 与同格 `agingList`（「增值税」× FILE_LABELS，基线 1910，逐发间隔 2.6 秒），**财税文件 637（桶只有空串 462+"null" 191）、其他文件 62（只有空串 63）、工作通知 190（只有空串 190）这三档名下不录时效**，配任一 `xxgkAging` 一律回 0；另五档同发是正常交集（法律 9→8、行政法规 10→7、国务院文件 9→7、税务部门规章 30→15、税务规范性文件 681→216）。换「留抵退税」（基线 58）交叉复认三档单发仍是空桶（财税文件 15＝空串 14+"null" 1、工作通知 9＝只有空串 9）、同发仍为 0——**跟着这一族走，不跟着检索词走**，所以判得死 | 据此立 `AGING_UNRECORDED_LEVELS` 三档常量，`build_filters` 在两维同给时发出前抛 `ValueError` 并说清换哪一维（按效力等级取清单就别带时效、时效回来读条目 `status`；要现行有效的某族文件就改用 `tax_type` 配时效，实测 159）；`tax_fgk.py` 共用同一枚 `filters_from_args`，两条 CLI 一起生效，`--effect-level` 帮文与 `references/commands.md`、`search_source/chinatax/NOTE.md` 三处同步改口（旧说法是「两维同发必然归零」，那是只有财税文件一档读数时以偏概全）。常驻用例一枚两向钉（三档拦死＋另五档不许顺手拦掉）：`tests/test_routing_terms.py::test_aging_with_unrecorded_effect_level_blocked_before_send`；注入证伪两案（整段失效、判据写反）各恰 1 红、控制组绿。踩坑：pwsh 下 argparse 帮文与 usage 打成 GBK 乱码，判据要看 rc 不看文本；全树 1516 passed、门禁 37/37 |
 | 接口那一栏恒空是真的，可废止依据与日期就在隔壁那一栏，而整个仓库一行没读（3.62.29 接进输出） | `references/source_defects.md` 与 `subskills/tax-preference/NOTE.md` 此前都只写「`xxgk_abolishDate` 30 条里只有空串与 `"null"`，判哪天被废止只能读正文」，读者据此要么去抠正文、要么被这句劝退。2026-11-25 六发 54 条把同一批条目的另一栏 `xxgk_description` 量了出来：**45/54 非空、25/54 含日期**，全文废止档 10/10 有值（《增值税一般纳税人登记管理办法》那条给的是「根据……（国家税务总局令第62号），自2026年1月1日起，全文废止。」），留抵退税档 5/5 全带日期；已修改档最长 983 字符是整部修改史；全文有效档只有 1/10 有值且装的是立法沿革（「2024年12月25日……通过 自2026年1月1日起施行」）；解读类（`文字政策解读,政策指引`）10/10 全空——原先担心的「把解读摘要当废止依据」被实测否证。空值写法只有空串与字符串 `null` 两种（与 `_AGING_BLANKS` 同族），没有空白串 | 新增 `_status_note_of`（清洗 + 限长 `STATUS_NOTE_LIMIT=200`，超长尾巴「…（原文更长，见详情页）」）与两枚条件键 `status_note`/`status_note_from`（点名来源栏，不写结构化承诺）；`scripts/tax_fgk.py` 的透传元组同步加这两枚键，否则法规库那一路仍只剩「这一栏没录入」；命令行与前端都打「处置：」。命名用「处置说明」而不是「废止说明」，因为全文有效档它偶尔装施行信息。常驻用例 `tests/test_routing_terms.py::test_status_note_carries_the_repeal_basis_and_blanks_stay_blank` 钉六件事（原文逐字带下、`"null"` 与空串都不写键、983 字符截到限长、穿过法规库层、命令行出「处置:」、来源键点名 `xxgk_description`）；本仓没有任何用例钉过 chinatax row 的键集（`status_from`/`status_note` 在 tests 里零命中），加键不撞既有钉。踩坑：`edit` 把模块级语句写成前导空格开头会直接落盘成缩进错误，提交前 `py_compile` 自证。全树 1517 passed、门禁 37/37 |
+| 法院两站的墙在接口层、不在页面层，且用 HTTP 200 装业务失败（3.62.30 首次实测 + 判据落地） | 2026-11-25 首次实测（此前本机一次请求都没发过）：两站页面层都直接可达——文书网首页 200/22309B、检索页 181217BMTKHNT2W0 200/14179B title「文书列表」，案例库首页 200/8555B、/view/list.html 200/11261B，都不下发 cookie、没有 WAF 挑战页。墙在接口层：案例库 /cpws_al_api/api/cpwsAl/search 与 searchTop10、两枚左侧聚类、getGroupDatas 共六枚全 HTTP 200 / 30 字节 / `{"msg":"未登录","code":401}`，补 UA+Referer+X-Requested-With 也不松；只有 /api/user/recordSearchLog 回真 401。文书网 POST /website/parse/rest.q4w 三发（空 body / 只带 construct / 带明文假 ciphertext）全 200 / 76 字节 / `{"code":9,"success":false,"result":null}`；三枚 /api/fp/* 回 200 但 0 字节；/down/isDown 回 code:1；GET 那条回 405 与 Tomcat 8.5.91 的 `Allow: POST`。文书网的检索参数要前端 DES3 现算（salt 随机 24 位 + 当日 iv，见 strToBinary.js），本仓库不重造。两族的成功值不同：NPC 认 code=200，这两站认 code=0 或 success 非 false，所以 `tax_http.npc_business_error` 会把案例库的健康响应`{"code":0,"msg":"获取成功！"}` 报成业务失败（实测），两把尺不许合并。 | 判据先备好、源仍不接：`tax_http.court_business_error` / `require_court_ok` 认 code=0 与 success 非 false 为通过，`tests/test_source_defects.py` 的 `TestCourtSharedBusinessGuard` 六条盯真值表、非 dict、消息含「不是库里没有」，并用一枚分歧钉把两把尺锁开（npc 尺必须拦下法院健康响应、法院尺必须拦下 NPC 健康响应）。源不接的理由是实测的：把六只原始信封直接喂现判据，`is_fetch_failure` 全 False，`tax_answer._rows_and_error` 把它们读成 rows=0 且无错——接进来就会把「没连上」答成「库里没有」。答案侧的出口是 `scripts/tax_cases.py` 的 `LIMITATIONS` 那一句（官方处理口径≠司法裁判口径），两份墙位档案在 `search_source/wenshu/` 与 `search_source/rmfyalk/`。 |
 
 ## 限流记录的实测台账
 
@@ -326,12 +327,28 @@ SKILL.md ② 末尾指向这一节。它回答两个问题：某一格动作**�
   只能拿裸短形去查——实测这样一趟给 2 条命中，取回的清单里没有一份文号对得上，
   于是报 `not_in_library`，并把"用的哪个检索词、接口给了几条命中"一起写进提醒。
   这一格要真正收掉得再按文件名对一遍，本层还没做。
-- **法院判决与复议决定这一层没接进来**。类案检索（`scripts/tax_cases.py`）只走
+- **法院判决与复议决定这一层没接进来，但两站的墙已经量过**。类案检索（`scripts/tax_cases.py`）只走
   税务总局站内的查处通报与曝光典型，`中国裁判文书网`（`wenshu.court.gov.cn`）与
-  `人民法院案例库`（`rmfyalk.court.gov.cn`）都未实现：前者要登录与验证码且近年
-  公开量骤减，后者整个库在登录墙后。**这两个入口本机一次请求都没发过**，所以这里
-  不写它们的反爬形态与阈值——没有量过就没有记录。后果写进输出模板：类案支持的
-  强度上限是"官方处理口径"（税务机关怎么查、怎么罚、怎么公布），不是"司法裁判口径"
+  `人民法院案例库`（`rmfyalk.court.gov.cn`）都未实现。**2026-11-25 首次实测**（此前本机一次请求都
+  没发过）：两站的页面层都是直接可达的——文书网首页与检索页 200、案例库 `/view/list.html` 200，
+  都不下发 cookie、都没有 WAF 挑战页；**墙在接口层**。案例库六枚接口（`/cpws_al_api/api/cpwsAl/`
+  的 search、searchTop10、getGroupDatas、两枚左侧聚类）匿名一律 **HTTP 200 / 30 字节
+  `{"msg":"未登录","code":401}`**，补 UA、Referer、X-Requested-With 都不松墙，只有
+  `recordSearchLog` 用真 401；文书网的 `POST /website/parse/rest.q4w` 三发（空 body、只带
+  construct、带明文假 ciphertext+真 queryCondition）全部 **200 / 76 字节
+  `{"code":9,...,"success":false}`**，`/api/fp/ah`、`/api/fp/cprq`、`/api/fp/gjjsClick` 回
+  **200 / 0 字节**（空响应，不是 JSON），`/down/isDown` 回 `code:1`；它的检索参数要前端
+  DES3 现算（`strToBinary.js` 里 `cipher()`＝salt+当日 iv+DES3(timestamp)，站点配置还带
+  `enCode`），本仓库不重造这套加密。
+  这一族的形状与 NPC 那族同病而**不同值**：NPC 认 `code=200` 为成功，法院两站认 `code=0` 为成功，
+  所以判据是 `tax_http.court_business_error`/`require_court_ok`（`success is False` 先报，否则
+  `code` 归一化后 `!= 0` 报），与 `npc_business_error` 是两把尺、不许合并——实测 NPC 那把会把
+  案例库的正常响应 `{"code":0,"msg":"获取成功！"}` 拦成失败。判据先备好而源不接，是因为本仓栽过的
+  不是「没接这个源」，而是「接了之后把墙读成 0 条」：探针实测这六只原始信封喂现判据
+  `is_fetch_failure` 全 False、喂 `tax_answer._rows_and_error` 全部读成「rows=0 且无错」，
+  也就是会被答成「库里没有」。常驻用例 `tests/test_source_defects.py::TestCourtSharedBusinessGuard`
+  钉住真值表、非 dict、两把尺的分歧、0 条命中仍是合法答案。
+  后果写进输出模板：类案支持的强度上限是"官方处理口径"（税务机关怎么查、怎么罚、怎么公布），不是"司法裁判口径"
   （法院怎么判）；要的是后者时这一层是空的，得说明缺口，不能拿查处通报冒充判决。
 - **稽查模拟的覆盖面就是 `data/inspection_domains.json` 里那几域，域外的事项等于没问**。
   这张表现在装的是研发与高企那条线（人员与工时归集、账证与辅助账一致性、项目实质与

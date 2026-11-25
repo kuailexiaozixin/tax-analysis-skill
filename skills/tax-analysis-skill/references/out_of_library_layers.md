@@ -1,8 +1,9 @@
-# 不在 L1–L4 之内的三层
+# 不在 L1–L4 之内的四层
 
-> 本文件是 `SKILL.md` ③ 末三段的下沉版。主线四层（上位法→规章公告→地方口径→
-> 实务解读）之外，还有三种东西会被用户问进来、但六个税收源都不收：专业口径
-> （会计/审计/内控/评估/证券）、立法过程草案，以及"用户点名某一份文件"这一形态的取证规矩。
+> 本文件是 `SKILL.md` ③ 末四段的下沉版。主线四层（上位法→规章公告→地方口径→
+> 实务解读）之外，还有四种东西会被用户问进来、但六个税收源都不收：专业口径
+> （会计/审计/内控/评估/证券）、立法过程草案、"用户点名某一份文件"这一形态的取证规矩，
+> 以及法院判决与复议决定那一层（司法两站，本仓库未接入、墙位已量）。
 > 它们都不进 ⑧ 的位阶表，处理方式各有硬性约束。
 
 ## 目录
@@ -11,6 +12,7 @@
 - [专业口径缺口](#专业口径缺口准则那一层不在-l1l4-之内)
 - [优惠封闭枚举](#优惠封闭枚举这一层不是专业口径是税收依据本体)
 - [立法过程文件](#立法过程文件草案那一层也不在-l1l4-之内)
+- [法院判决与复议决定](#法院判决与复议决定这一层未接入但墙位已经量过)
 
 ---
 
@@ -213,3 +215,34 @@ chenyiwei 的其余接口差异（`recent?days=1` 可以整天空、`penalties` 
 `test_legislative_stage_is_silent_for_promulgated_texts`。立法取证轮覆盖三个源、且用
 草案词而非主题短词，由 `tests/test_source_defects.py::test_draft_round_also_searches_shui5_and_wechat`
 与 `test_draft_round_uses_draft_term_not_short_term` 钉住。
+
+## 法院判决与复议决定：这一层未接入，但墙位已经量过
+
+**为什么要单列这一节**：用户会拿"法院怎么判的"来问税务争议。类案检索
+（`scripts/tax_cases.py`）只走税务总局站内的查处通报与曝光典型，司法那一层的两个入口
+——`中国裁判文书网`（`wenshu.court.gov.cn`）与 `人民法院案例库`（`rmfyalk.court.gov.cn`）
+——本仓库都未实现。2026-11-25 首次实测把两站的墙量清了，读数在
+`search_source/rmfyalk/NOTE.md` 与 `search_source/wenshu/NOTE.md`，这里只留判据。
+
+**这一层的失败长得像成功**：两站都用 **HTTP 200 装业务失败**——案例库匿名六枚接口一律
+200/30 字节 `{"msg":"未登录","code":401}`（补 UA、Referer、X-Requested-With 都不松墙），
+文书网的 `POST /website/parse/rest.q4w` 带不带参数都是 200/76 字节
+`{"code":9,…,"success":false}`，另有三枚 `/api/fp/*` 回 **200/0 字节**（空响应，连 JSON
+都不是）。页面层反倒全部可达（首页、列表页、检索页都 200，不下发 cookie、没有挑战页），
+所以"打开得了"与"取到数据"是两件事。判据是业务码不是状态码：这一族认 `code=0` 为成功，
+用 `tax_http.court_business_error`／`tax_http.require_court_ok`；NPC 那把
+`tax_http.npc_business_error` 认 `code=200`，混用会把案例库的正常响应拦成失败，
+两把尺不许合并（分歧钉在
+`tests/test_source_defects.py::TestCourtSharedBusinessGuard`）。
+
+**为什么判据先备好而源不接**：本仓栽过的不是「没接这个源」，而是「接了之后把墙读成 0 条」。
+探针实测这六只原始信封喂 `tax_http.is_fetch_failure` 全 False、喂
+`tax_answer._rows_and_error` 全部读成「rows=0 且无错」——照现状接进来，墙后的空清单会被
+答成「库里没有」。所以顺序是判据与用例先落地，接入这条链再谈；将来接入时客户端必须自己打
+`_fetch_failed`（契约见 `references/source_defects.md`「由代码保证的源缺陷」）。
+
+**答案怎么说**：要的是司法裁判口径而库里只有查处通报时，写明这一层缺失——
+`tax_cases.LIMITATIONS` 第二条那句「本层的强度上限是『官方处理口径』，不是『司法裁判
+口径』」必须转写进答案，不得拿通报冒充判决，也不得把 `code=401`／`code=9` 说成
+"库里没有这份文书"。文书网还有一层单独的难：它的检索参数要前端 `cipher()` 现算
+（DES3 + 当日 iv + 站方 `enCode`），本仓库不重造这套加密，要接先走浏览器路径。

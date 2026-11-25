@@ -1,7 +1,7 @@
 ---
 name: tax-analysis-skill
 description: "税务问题分析引擎：先判定问题类型与缺失前提，再从上位法逐层向下检索到行政法规、地方口径与实务案例，多源聚合后按规范层级、时效与角色给每条依据定级（三根轴各判各的，不折算成分数），最后输出带限制条件的分析结论。适用于一切涉及税与费的问题——某个税怎么算、能不能享受优惠、该按什么税目归类、怎么办理、多久之内办、有什么风险、两个方案选哪个，以及法规原文的条款填空与选项判断、政策与案例检索。回答前一律实时联网核查，不使用训练数据中的政策记忆。"
-version: "3.62.29"
+version: "3.62.30"
 ---
 
 # 税务问题分析引擎 (Tax Analysis Engine)
@@ -22,7 +22,7 @@ version: "3.62.29"
 | 用户点名要查询/阅读/解读某一份文件 | ③ 末 | `references/out_of_library_layers.md` |
 | 题面把会计/审计/内控/评估/证券口径写进要件 | ③ 末 | `references/out_of_library_layers.md`，取证走子技能 |
 | 决定六源怎么聚合、缺一个漏什么 | ④ | 缺一路漏哪一半逐条写在 `references/commands.md`「六源各供什么、缺一路会漏掉哪一半」；聚合参数与失败分诊在同文件 |
-| 查具体命令、看某个源失败了怎么办 | ⑤ | `references/commands.md`（六源，含「临时脚本与探针的纪律」）；六源之外那四路的命令在 `references/out_of_library_layers.md`；正文取到的是哪一种状态（`body_status` 四态）判在 ⑤；官方法规原文那三站的取数机制在 `search_source/chinatax/`、`search_source/npc-flk/`、`search_source/fgk/` |
+| 查具体命令、看某个源失败了怎么办 | ⑤ | `references/commands.md`（六源，含「临时脚本与探针的纪律」）；六源之外那五路的命令在 `references/out_of_library_layers.md`；正文取到的是哪一种状态（`body_status` 四态）判在 ⑤；官方法规原文那三站的取数机制在 `search_source/chinatax/`、`search_source/npc-flk/`、`search_source/fgk/` |
 | 写最终回答（六段式/逐条比对/填空/条件矩阵/风险自检） | ⑥ | `references/output_templates.md` |
 | 判定某项优惠能否享受、多项能否同享 | ⑥ + ⑦ 第 22 条 | `references/output_templates.md`「资格判定条件矩阵式」 |
 | liability 题要出数 | ⑥ 前 | `scripts/tax_calc.py`（算式展开器；税率与扣除标准由 ③ 检回后当参数喂进） |
@@ -38,7 +38,7 @@ version: "3.62.29"
 | 判断一条依据在答案里顶哪一层、要提醒什么（层级、时效、角色） | ⑧ | `references/evidence_grading.md` |
 | 查税种/专题对应的检索词与依据源 | ⑨ | `references/tax_categories.md` |
 | 想知道源缺陷由哪段代码保证、还剩哪些边界 | ⑩ | `references/source_defects.md` |
-| 了解各数据源性质与覆盖 | ⑪ | 本节表格只到「这一源给什么、接主线哪一步」；边界登记在 `references/source_defects.md`「由代码保证的源缺陷」，不在 L1–L4 的那三层与其选路在 `references/out_of_library_layers.md`，各站取数机制在 `search_source/<站>/`（3.62.24 起站点子技能在这一根，`subskills/` 只留业务专题） |
+| 了解各数据源性质与覆盖 | ⑪ | 本节表格只到「这一源给什么、接主线哪一步」；边界登记在 `references/source_defects.md`「由代码保证的源缺陷」，不在 L1–L4 的那四层与其选路在 `references/out_of_library_layers.md`，各站取数机制在 `search_source/<站>/`（3.62.24 起站点子技能在这一根，`subskills/` 只留业务专题） |
 | 启动网页界面做可视化呈现 | ⑫ | `references/web_interface.md` |
 | 跑评测、看指标含义与判读标准 | ⑬ | `references/evaluation.md` |
 
@@ -191,7 +191,7 @@ python tests/probe_classify.py --stats --real --oracle    # 判型体检（离�
 **「按词循环」不等于「把几枚词用空格拼成一串」**——站内搜索按整串或任一词处理，两种都不是 AND。同一主机
 连续两次 TLS 握手失败后本会话内不再对它发请求（`tax_http.TLS_STREAK_LIMIT`）；限流记录按 `tests/probe_rate_limit.py` 的三字段契约记进 `references/source_defects.md`「限流记录的实测台账」。
 
-三层不在 L1–L4 之内，每层的成因、命令与边界全在 `references/out_of_library_layers.md` 对应小节，这里只留判据：
+四层不在 L1–L4 之内，每层的成因、命令与边界全在 `references/out_of_library_layers.md` 对应小节，这里只留判据：
 - **用户点名了某一份文件**：先按标题把这一份本身捞出排最前（`tax_terms.title_identity`），不同名不得
   拿同域文件顶位；没定位时按 `cited_state` 分三档说清成因，那是三句不同的话、不得压成一句。
 - **专业口径缺口**（`tax_analyze.accounting_gap` 认出「税法借用会计结果」；审计/内控/评估/证券口径按
@@ -205,6 +205,10 @@ python tests/probe_classify.py --stats --real --oracle    # 判型体检（离�
 - **立法过程文件**：判据只看题面用词（`tax_analyze.LEGISLATIVE_STAGES`），不占主依据，草案标明是转述。
 - **研发费用加计扣除／高企认定**：另读 `subskills/R&D-Expenses/`——算分、归集与三套口径隔离的领域
   手册，**不是检索源**；它引的政策原文仍回 ③ 取、进 ⑧ 定级。
+- **法院判决与复议决定**：司法这一层本仓库未接入，两站的墙 2026-11-25 量过、记在
+  `search_source/rmfyalk/` 与 `search_source/wenshu/`。要的是司法裁判口径而库里只有查处通报时，
+  答案必须写明这一层缺失（`tax_cases.LIMITATIONS` 那句），**不得**拿通报冒充判决，也不得把
+  接口的 `code=401`／`code=9` 说成"库里没有这份文书"（判据 `tax_http.require_court_ok`）。
 
 ---
 
@@ -228,7 +232,7 @@ python scripts/tax_aggregator.py "<关键词>" --sources npc,chinatax --size 10 
 ## ⑤ 各源命令与失败表现
 
 六源的命令全文、参数、NPC 串行闸（`NpcSerialGate` / `TAX_NPC_LOCK_TIMEOUT`）与失败表现对照表在 `references/commands.md`；
-③ 末那四路不在六源里，命令写在 `references/out_of_library_layers.md`，它们「没取到」与「取到了但读不得」（编号与
+③ 末那五路不在六源里，命令写在 `references/out_of_library_layers.md`，它们「没取到」与「取到了但读不得」（编号与
 文号都不证明版次）的形态记在所属目录 `SKILL.md`／`NOTE.md`。此处只留五条硬规矩：
 
 - **失败先分诊**：区分"限流"与"代码坏了"——限流等退避重跑，代码问题才改代码。

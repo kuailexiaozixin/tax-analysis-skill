@@ -818,8 +818,9 @@ def subskill_pointer_problems(docs: dict) -> list:
 STEP3_RE = re.compile(r"(?m)^## ③.*?\n(?=^## ④)", re.S)
 COMMAND_DOCS = ("references/commands.md", "references/out_of_library_layers.md")
 # 3.62.24 起十一个源在 search_source/、两枚业务专题留在 subskills/，合计 13 目录。
+# 3.62.30 起法院两站的墙位档案（wenshu、rmfyalk）也在 search_source/，合计 15 目录。
 # 下限按目录总数算：只数一根的话，哪天把整根改名搬走，这条判据反而更松。
-MIN_SUBSKILL_DIRS = 13
+MIN_SUBSKILL_DIRS = 15
 MIN_SELF_OWNED_SCRIPTS = 3
 
 

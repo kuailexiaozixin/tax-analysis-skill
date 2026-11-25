@@ -828,6 +828,100 @@ def test_request_failure_is_flagged_not_read_as_no_hit():
     print("  [PASS] search_chinatax 请求失败带 _fetch_failed，不与空命中/维度拼窄混用")
 
 
+def test_column_guard_truth_table():
+    """column_unhonoured 只在"发号码且响应没回显这枚号"时下结论。
+
+    对应 3.62.32 实测：column=abc / 不存在的栏目名 都回 total=0 而 columnId=None，
+    与 column=5739 那种"合法号、这一主题下真 0 条"（回显 columnId='5739'）在现判据
+    下必须分得开——否则站点没接这个值会被答成「这个栏目里没有」。
+    """
+    # 发号码：回显等于发出的号 ⇒ 认了，不报
+    assert W.column_unhonoured("5739", {"columnId": "5739"}) is False
+    assert W.column_unhonoured("5741", {"columnId": "5741"}) is False
+    # 发号码：回显是别的号 / 干脆没有 ⇒ 没认，报
+    assert W.column_unhonoured("5742", {"columnId": "5738"}) is True
+    assert W.column_unhonoured("abc", {"columnId": None}) is False  # abc 不是号码
+    assert W.column_unhonoured("9999", {"columnId": None}) is True
+    assert W.column_unhonoured("0", {}) is True
+    # 发名字：这一维认了也不回 columnId，不能假装能判 ⇒ 一律不报
+    assert W.column_unhonoured("政策法规", {"columnId": None}) is False
+    assert W.column_unhonoured("税收政策", {"columnId": "5742"}) is False
+    # 没发这一维 / 空值 / 非 dict ⇒ 不报
+    assert W.column_unhonoured(None, {"columnId": None}) is False
+    assert W.column_unhonoured("", {"columnId": None}) is False
+    assert W.column_unhonoured("  ", {"columnId": None}) is False
+    assert W.column_unhonoured("5741", None) is False
+    assert W.column_unhonoured("5741", []) is False
+    print("  [PASS] column_unhonoured 只对「号码未被回显」报，名字维一律不报")
+
+
+def test_column_name_ambiguity_is_named_not_resolved():
+    """column_echo_absent 负责把"发名字分不清"说出口，但不替站点选一种成因。"""
+    # 发名字、响应不回 columnId ⇒ 分不清（合法名与乱写的名字同形）
+    assert W.column_echo_absent("政策法规", {"columnId": None}) is True
+    assert W.column_echo_absent("不存在的栏目名", {}) is True
+    # 发名字、响应把名字换成了号 ⇒ 分得清，不报
+    assert W.column_echo_absent("税收政策", {"columnId": "5742"}) is False
+    # 发号码 / 没发 ⇒ 不归这一枚判据管
+    assert W.column_echo_absent("5739", {"columnId": None}) is False
+    assert W.column_echo_absent(None, {"columnId": None}) is False
+    assert W.column_echo_absent("abc", {"columnId": None}) is True  # 乱写的值也走名字那条路
+    print("  [PASS] column_echo_absent 只声明分不清，不冒充能判")
+
+
+def test_unhonoured_column_is_not_read_as_empty_channel():
+    """端到端：发号码未被认下 ⇒ _empty_reason 在位、不打 _zero_hit；合法号真 0 条 ⇒ 打 _zero_hit。
+
+    这一发桩的 payload 逐字对 probe32e/32i 的实测形状：abc 与不存在的栏目名都回
+    total=0 且 columnId=None，而 5739 回 columnId='5739'。红线⑦要防的就是把前两者
+    答成"这个栏目里没有相关条目"。
+    """
+    saved = W.requests.get
+
+    def fake(url, params=None, **kw):
+        col = (params or {}).get("column", "")
+        if col == "5739":
+            # 合法号、真 0 条：站点回显 columnId
+            return _Resp({"columnId": "5739", "column": "总局概况",
+                          **_payload(0, [])})
+        if col == "abc":
+            # 不是号码：原样回显 column，columnId 为 None
+            return _Resp({"columnId": None, "column": "abc", **_payload(0, [])})
+        if col == "不存在的栏目名":
+            return _Resp({"columnId": None, "column": "不存在的栏目名",
+                          **_payload(0, [])})
+        if col == "政策法规":
+            # 合法栏目名但不在 columns 表里：认了也不回 columnId
+            return _Resp({"columnId": None, "column": "政策法规", **_payload(0, [])})
+        return _Resp(_payload(0, []))
+
+    try:
+        W.requests.get = fake
+        bad = W.search_chinatax("骗取出口退税", column="9999")
+        abc = W.search_chinatax("骗取出口退税", column="abc")
+        ghost = W.search_chinatax("骗取出口退税", column="不存在的栏目名")
+        name = W.search_chinatax("骗取出口退税", column="政策法规")
+        real_empty = W.search_chinatax("骗取出口退税", column="5739")
+    finally:
+        W.requests.get = saved
+
+    # 9999 走 0 字节 _error 那一档，这里桩回的是 JSON，所以按"号码未被回显"报
+    assert "没有被站点认下" in bad.get("_empty_reason", ""), bad
+    assert "_zero_hit" not in bad, "站点没认这个号，不能读成栏目里真 0 条"
+    # abc 不是号码，走"名字维分不清"那一支
+    assert "分不清" in abc.get("_empty_reason", ""), abc
+    assert "_zero_hit" not in abc, abc
+    assert "分不清" in ghost.get("_empty_reason", ""), ghost
+    assert "_zero_hit" not in ghost, ghost
+    # 合法栏目名同样只声明分不清——不假装能判
+    assert "分不清" in name.get("_empty_reason", ""), name
+    assert "_zero_hit" not in name, name
+    # 合法号真 0 条：这一路才是答案真是 0 条，打 _zero_hit、不带成因句
+    assert real_empty.get("_zero_hit") is True, real_empty
+    assert "_empty_reason" not in real_empty, real_empty
+    print("  [PASS] 栏目号未被认下与合法号真 0 条分开报，前者不打 _zero_hit")
+
+
 def test_accounting_gap_flags_questions_keyed_on_accounting():
     """税法条款借用会计结果时，① 要登记会计口径缺口——六个税收源都不收准则条文。"""
     cases = {
@@ -1057,6 +1151,9 @@ def main():
         test_all_labels_switch_reopens_the_whole_site,
         test_out_of_range_page_and_missing_list_are_told_apart,
         test_request_failure_is_flagged_not_read_as_no_hit,
+        test_column_guard_truth_table,
+        test_column_name_ambiguity_is_named_not_resolved,
+        test_unhonoured_column_is_not_read_as_empty_channel,
         test_accounting_gap_flags_questions_keyed_on_accounting,
         test_accounting_gap_does_not_flag_pure_tax_wording,
         test_accounting_gap_reaches_the_answer_layer,

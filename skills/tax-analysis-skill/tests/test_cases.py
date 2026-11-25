@@ -799,22 +799,28 @@ class LedgerContract(unittest.TestCase):
                             f"「{row[0][:24]}」的当时结果没有逐项计数：{row[4][:60]!r}")
 
     def test_claims_that_were_not_remeasured_say_so(self):
-        """既有记录里的旧说法：冒充本轮数据要报红，悄悄删掉也要报红。
+        """旧说法要么写明「未复测并解释」，要么真去量——3.62.32 走的是后者。
 
-        探针没有「税收政策栏／互动」那两条请求（栏目号没取到），所以那两个数字
-        在任何一天都不可能是本轮量出来的。只写"含未复测的行必须解释"挡不住
-        反向写法——把"未复测"三个字删了，那两个数就变成有日期的数据了。
+        「税收政策栏仅 7、互动 8」那句 2026-11-25 已按栏目号复测（5742→7、5745→8），
+        所以这一枚钉换了方向：旧说法必须还在（删了读者就以为逐栏比过），但**不许**
+        再写「未复测」，且必须把两枚栏目号与本轮量到的两个数一起留在同一格里。
+        反向也钉：任何一行写了未复测，就得说清为什么没测。
         """
         for row in self.rows:
             if "未复测" not in row[4]:
                 continue
             self.assertIn("没取到", row[4], f"「{row[0][:24]}」写了未复测却没写为什么没测")
-        unmeasured = [r for r in self.rows if "税收政策栏" in r[4]]
-        self.assertEqual(len(unmeasured), 1,
+        remeasured = [r for r in self.rows if "税收政策栏" in r[4]]
+        self.assertEqual(len(remeasured), 1,
                          "「税收政策栏仅 7、互动 8」这条旧说法被删掉了：读者会以为"
                          "案例集中在新闻发布栏这件事被逐栏比过")
-        self.assertIn("未复测", unmeasured[0][4],
-                      "旧栏数没带「未复测」就成了有日期的本轮数据")
+        cell = remeasured[0][4]
+        self.assertNotIn("未复测", cell,
+                         "这一格 2026-11-25 已按栏目号复测，还写未复测就是把量过的当没量")
+        for code in ("5742", "5745"):
+            self.assertIn(code, cell, f"栏目号 {code} 没进台账，那两个数就还是没来处")
+        for pair in ("7 条", "8 条"):
+            self.assertIn(pair, cell, f"复测量到的 {pair} 没留下")
         self.assertIn("785", self.md, "记录值与本轮量值不一致时，两个数都要留下")
         self.assertIn("828", self.md)
 

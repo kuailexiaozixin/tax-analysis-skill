@@ -38,7 +38,7 @@ import tax_web_search as tws  # noqa: E402
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-MAX_REQUESTS = 24
+MAX_REQUESTS = 28
 
 # 台账里"全站能不能搜到案例"这一行的判据就是这四个词的命中数
 CASE_WORDS = ("重大税收违法案件", "税收违法 曝光", "骗取出口退税", "虚开发票 查处")
@@ -62,6 +62,15 @@ LIST_PAGES = tuple(
 # "换成处理结果词"。台账那一行要说的是这两种写法差两个数量级。
 WORD_SHAPE_QUERIES = (("骗取出口退税 案例", None), ("重大税收违法案件 公布", None),
                       ("虚开发票 依法查处 罚款", None), ("偷税 案件", NEWS_COLUMN))
+# 栏目对照四发（3.62.32 起常驻）。这四条不是重复 probe32d–32i 那九路一次性脚本，
+# 而是把其中「台账要长期比」的四面收进来：两枚旧记录里的栏目号（5742 税收政策、
+# 5745 互动交流，旧说法「仅 7、8」要靠它们复量）、一枚非法号码（9999：站点回
+# 0 字节，看会不会被读成「栏目里没有」）、一枚合法号真 0 条（5739 总局概况：
+# 与 9999 同形而语义相反，这一对照才是判据的正反面）。
+# 追加在计划末尾而不是插在栏目收窄之后：台账里「探针第 9–12 发」「第 13–14 发」
+# 这类编号引用已有好几处，插中间会把那些行全部改错。
+COLUMN_CONTRAST = (("骗取出口退税", "5742"), ("骗取出口退税", "5745"),
+                   ("骗取出口退税", "9999"), ("骗取出口退税", "5739"))
 # URL 路径里的栏目代号是 6 位（c100011／c102025／n810739），正文 id 是 7 位
 # （c5172440），两者靠位数分开，不必猜。两头都用零宽断言：正则吃掉分隔斜杠的
 # 写法会把相邻段隔一个漏一个（/n810219/c102025/c5172440/ 只能匹到首尾两段），
@@ -97,6 +106,10 @@ def requests_plan():
         plan.append(("检索词形态",
                      f"search5 searchWord={w}"
                      + (f" column={col}" if col else ""),
+                     {"keyword": w, "column": col}))
+    for w, col in COLUMN_CONTRAST:
+        plan.append(("栏目对照",
+                     f"search5 searchWord={w} column={col}",
                      {"keyword": w, "column": col}))
     return plan
 
@@ -166,9 +179,17 @@ def run_one(kind, spec):
     case_ish = sum(1 for x in rows
                    if set(col_codes(x["url"])) & set(SUBTYPE_CODES)
                    and not x.get("document_number"))
+    # 栏目对照那几发的关键读数不是 total，而是站点认没认这个值：生产把「发了号码
+    # 而响应没回显它」写成 _empty_reason（不打 _zero_hit），把「合法号真 0 条」打成
+    # _zero_hit。这两件事在 total 上同形（都是 0），只有把键读出来才分得开。
+    why = ""
+    if res.get("_empty_reason"):
+        why = f" | _empty_reason：{res['_empty_reason'][:70]}"
+    if res.get("_zero_hit"):
+        why += " | _zero_hit=True（请求成功、答案真 0 条）"
     return (f"total={res.get('total')}，首屏 {len(urls)} 条，"
             f"子栏目 {hit}，首屏判为案例 {case_ish} 条，"
-            f"带文号 {sum(1 for x in rows if x.get('document_number'))} 条", [], rows)
+            f"带文号 {sum(1 for x in rows if x.get('document_number'))} 条{why}", [], rows)
 
 
 def tally(rows):

@@ -158,5 +158,87 @@ class TestGatesHaveLedgerRows(unittest.TestCase):
         self.assertIn("weixin.sogou.com", hosts, "搜狗那把闸在代码里找不到了")
 
 
+class _Resp:
+    """探针形态判据要的最小响应面：状态码、原始字节、文本、落地地址。"""
+
+    def __init__(self, status=200, body="", url="https://weixin.sogou.com/weixin"):
+        self.status_code = status
+        self.content = body.encode("utf-8") if isinstance(body, str) else body
+        self.text = body if isinstance(body, str) else body.decode("utf-8", "replace")
+        self.url = url
+        self.headers = {"Content-Type": "text/html"}
+
+
+class TestProbeShapeLabels(unittest.TestCase):
+    """探针的形态标签必须与生产判据同族——2026-11-25 实测逼出来的一条。
+
+    那天 `weixin.sogou.com/weixin?type=2` 回的是 **HTTP 200 / 0 字节**（四档对照
+    全同：新会话、先取首页拿 cookie、桌面 UA、补浏览器头；真浏览器同址也是空白页）。
+    旧探针只看状态码，把这发记成「200-正常页」，台账当场就会写成「未复现限流」——
+    而生产 `tax_wechat.search_wechat` 同一发报的是「既没有结果块也没有无结果提示」。
+    探针与生产读出两种性质，台账就失去了「下次按同一种形态比对」的能力。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        if str(SCRIPTS_DIR) not in sys.path:      # 探针内部按生产形状 import
+            sys.path.insert(0, str(SCRIPTS_DIR))
+        spec = importlib.util.spec_from_file_location(
+            "probe_rate_limit", ROOT / "tests" / "probe_rate_limit.py")
+        cls.probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.probe)
+
+    def test_empty_page_is_not_recorded_as_a_normal_page(self):
+        label = self.probe._sogou_shape(_Resp(status=200, body=""))
+        self.assertNotEqual(label, "200-正常页",
+                            "空壳页又被记成正常页：台账会写「未复现」，"
+                            "而生产同一发报的是取数失败")
+        self.assertIn("空响应", label)
+
+    def test_the_three_wechat_shapes_are_three_labels(self):
+        """结果块、无结果提示、既无块又无提示——三件事必须三种标签。"""
+        import tax_wechat
+        with_block = ('<div class="txt-box"><a href="/link?url=x">t</a></div>'
+                      '</div>') * 3
+        self.assertTrue(self.probe._sogou_shape(
+            _Resp(body=with_block)).startswith("200-结果块"))
+        self.assertEqual(self.probe._sogou_shape(
+            _Resp(body="抱歉，" + tax_wechat.NO_RESULT_MARK + "相关的微信公众号文章。")),
+            "200-无结果提示")
+        self.assertIn("既无结果块也无提示",
+                      self.probe._sogou_shape(_Resp(body="<html>壳页</html>")))
+
+    def test_antispider_redirect_still_wins_over_the_body_checks(self):
+        self.assertEqual(
+            self.probe._sogou_shape(_Resp(body="", url="https://weixin.sogou.com/antispider/?x")),
+            "跳转-antispider")
+
+    def test_the_mobile_probe_separates_an_empty_body_too(self):
+        """手机那一路同一族病：0 字节不能算「无结果区」，得单列一格。"""
+        self.assertIn("空响应",
+                      self.probe._sogou_mobile_shape(_Resp(
+                          body="", url="https://m.sogou.com/web/searchList.jsp")))
+
+    def test_good_labels_are_predicates_not_one_fixed_string(self):
+        """两路搜狗入口的「放行」都写在标签前缀里；压成固定串就看不出量到几条。"""
+        for key in ("sogou", "sogou-mobile"):
+            good = self.probe.TARGETS[key]["good"]
+            self.assertTrue(callable(good),
+                            f"{key} 的 good 又不是判函数了，形态会被压平")
+        self.assertTrue(self.probe._is_good(
+            self.probe.TARGETS["sogou"], "200-结果块(10块)"))
+        self.assertFalse(self.probe._is_good(
+            self.probe.TARGETS["sogou"], "200-空响应(0字节)"))
+        self.assertFalse(self.probe._is_good(
+            self.probe.TARGETS["sogou-mobile"], "200-有结果块无直链(raw=0)"))
+
+    def test_the_probe_covers_both_sogou_entries(self):
+        """台账那两行说过「探针未收录手机网页搜索」——收录了就得钉住，
+        否则探针退化回三枚入口，台账那句改口又变成空话。"""
+        self.assertIn("sogou-mobile", self.probe.TARGETS)
+        self.assertIn("wechat-read", self.probe.TARGETS)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

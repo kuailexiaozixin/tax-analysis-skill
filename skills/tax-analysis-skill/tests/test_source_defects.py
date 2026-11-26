@@ -1392,6 +1392,71 @@ class TestNpcSharedBusinessGuard(unittest.TestCase):
                 '"code":200,"msg":"查询成功"}',
                 '{"msg":"系统异常","code":500}')
         self.assertIn("业务失败", str(cm.exception))
+    def test_wide_round_total_follows_the_pool_the_rows_came_from(self):
+        """加宽轮真并进新候选、两档 total 不同 ⇒ 报出去的 total 取候选那一档，主发档留 source_total。
+
+        桩照 2026-11-26 实测的两档形状：主发（pageSize=2）报 45、加宽（pageSize=20）报 60，
+        加宽那份带回一枚主发里没有的 B9。生产「环境保护」size=5 那次就是这个形状——
+        报 3108、给的五条却全在 pageSize=20 那一档里（与 size=20 结果交集 5/5）。
+        """
+        r, calls = self._two_round_search(
+            '{"total":45,"rows":[{"bbbs":"A1","flfgname":"中华人民共和国增值税法","sxx":3,"score":9},'
+            '{"bbbs":"A2","flfgname":"增值税暂行条例","sxx":3,"score":8}],'
+            '"code":200,"msg":"查询成功"}',
+            '{"total":60,"rows":[{"bbbs":"A1","flfgname":"中华人民共和国增值税法","sxx":3,"score":9},'
+            '{"bbbs":"B9","flfgname":"关税税则委员会公告","sxx":3,"score":1}],'
+            '"code":200,"msg":"查询成功"}')
+        self.assertEqual(2, calls, "加宽轮没发出去，测的就不是这条路径")
+        self.assertEqual(60, r["total"], "候选取自加宽那一档，total 就不该再报主发那一档的数")
+        self.assertEqual(45, r.get("source_total"), "主发那一档的数要留着，别让人以为接口只报一个数")
+        self.assertIn("_total_note", r, "两档各报什么要写进 _total_note，不能只换个数字不留痕迹")
+
+    def test_wide_round_with_the_same_total_writes_no_extra_keys(self):
+        """控制组：两档 total 相同（「增值税」实测 45/45）⇒ 什么都不补，口径自洽。"""
+        r, calls = self._two_round_search(
+            '{"total":45,"rows":[{"bbbs":"A1","flfgname":"中华人民共和国增值税法","sxx":3,"score":9}],'
+            '"code":200,"msg":"查询成功"}',
+            '{"total":45,"rows":[{"bbbs":"A1","flfgname":"中华人民共和国增值税法","sxx":3,"score":9},'
+            '{"bbbs":"B9","flfgname":"关税税则委员会公告","sxx":3,"score":1}],'
+            '"code":200,"msg":"查询成功"}')
+        self.assertEqual(2, calls)
+        self.assertEqual(45, r["total"])
+        self.assertNotIn("source_total", r, "两档同数时不该凭空造一个 source_total")
+        self.assertNotIn("_total_note", r)
+
+    def test_wide_round_adding_nothing_keeps_the_main_total(self):
+        """加宽轮没带回任何新候选（merged=0）⇒ 这批还是主发那一档的，total 不许换。"""
+        r, calls = self._two_round_search(
+            '{"total":45,"rows":[{"bbbs":"A1","flfgname":"中华人民共和国增值税法","sxx":3,"score":9}],'
+            '"code":200,"msg":"查询成功"}',
+            '{"total":60,"rows":[{"bbbs":"A1","flfgname":"中华人民共和国增值税法","sxx":3,"score":9}],'
+            '"code":200,"msg":"查询成功"}')
+        self.assertEqual(2, calls)
+        self.assertEqual(45, r["total"], "没并进新东西就把 total 换了，等于凭空改口径")
+        self.assertNotIn("source_total", r)
+
+    def test_no_widening_round_leaves_total_alone(self):
+        """size=100 时 fetch_size==size、加宽那一支根本不进 ⇒ 新加的那两个键都不该出现。"""
+        import tax_search as TS
+        calls = {"n": 0}
+
+        def fake(method, url, **kw):
+            calls["n"] += 1
+            return _NpcEnvelopeResp(
+                '{"total":45,"rows":[{"bbbs":"A1","flfgname":"中华人民共和国增值税法","sxx":3,"score":9}],'
+                '"code":200,"msg":"查询成功"}')
+
+        old = TS._request
+        try:
+            TS._request = fake
+            r = TS.search_tax("增值税", scope="title", search_type=2, size=100, page=1)
+        finally:
+            TS._request = old
+        self.assertEqual(1, calls["n"], "size=100 不该再发第二发")
+        self.assertEqual(45, r["total"])
+        self.assertNotIn("source_total", r)
+        self.assertNotIn("_total_note", r)
+
 
 
 # ── ①b 法院两站的业务码：同一族病症、不同的成功值，不能套 NPC 那把尺 ──────
@@ -4830,7 +4895,8 @@ class TestFlkTotalIsNotTheEchoedHitCount(unittest.TestCase):
     """命令行的回显：flk 那一格 `total` 是接口随参数换值的回报，不是命中总数。
 
     取样口径与逐发读数在 `search_source/npc-flk/NOTE.md` 第二节：同一枚「环境保护」在
-    `pageSize=5` 回 3,118、在 10／20／50 回 224，`pageSize=10` 翻到第 23 页它又回 3,118。
+    `pageSize=1—5` 回 3,108、6 及以上回 219（2026-10-20 那一次是 3,118 与 224，两档是两份不同的
+    集合），`pageSize=10` 翻到第 23 页它又回 3,118 那一档。
     按 `⌈total/pageSize⌉` 报"一共几页"会在一份还能翻的集合上给出一个假的顶。
     """
 

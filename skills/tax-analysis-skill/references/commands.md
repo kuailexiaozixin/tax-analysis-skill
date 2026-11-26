@@ -156,20 +156,22 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
 判据收在 `search_source/chinatax/SKILL.md` 第三步。
 这里只登记接进了什么：
 
-- **已接进命令行的有七组**（2026-10-01 起五组，2026-10-02 补 `xxgkAging`、`xxgkEffectLevel`）：
+- **已接进命令行的有八组**（2026-10-01 起五组，2026-10-02 补 `xxgkAging`、`xxgkEffectLevel`，
+  2026-11-27 补 `industrytypename`）：
   `wordPlace`、`participleRule`、`xxgkSonTaxPolicy`、`docType`+`docYear`+`docNo`、
-  `cwrqStart`+`cwrqEnd`、`xxgkAging`、`xxgkEffectLevel`，都由 `tax_web_search.build_filters`
+  `cwrqStart`+`cwrqEnd`、`xxgkAging`、`xxgkEffectLevel`、`industrytypename`，都由 `tax_web_search.build_filters`
   拼参数、`search_chinatax(filters=…)` 并入请求，命令行开关见下文「search5 收窄维度的命令行」。
   另有三项不是收窄维度而是检索选项，走 `search_chinatax` 的关键字参数：`label` 默认发
   `FILE_LABELS` 那十个文件类标签（`--all-labels` 关），`orderBy` 由 `--order` 选（默认相关度），
   `column` 由调用方直接给值（`tax_web_search.py` 自己的命令行没有这一枚开关，用它的是
   `tax_cases.py` 的 `CASE_COLUMN=5741`）。
-- **函数层与命令行都不发**：`xxgkTaxPolicy`、`xxgkFormulatedYear`、`industrytypename`、`likeDoc`、
+- **函数层与命令行都不发**：`xxgkTaxPolicy`、`xxgkFormulatedYear`、`likeDoc`、
   `searchWordMd5`，以及 `startTime`／`endTime` 那一族（同一区间带完整时间戳时与 `cwrq` 那族收到
   同一个集合，页面自己发的是 `cwrq`）。往命令行加新维度时按 `search_source/chinatax/NOTE.md`
   第二节那张单发参数表逐行核对，不要凭记忆改。
-- 值域是拦停依据：`AGING_VALUES`／`EFFECT_LEVEL_VALUES` 之外的值由 `build_filters` 在发请求前
-  抛 `ValueError`。放过去拿到的是 `total=0`，与"这一维真的没有内容"在响应里是同一个形态。
+- 值域是拦停依据：`AGING_VALUES`／`EFFECT_LEVEL_VALUES`／`INDUSTRY_VALUES` 之外的值由
+  `build_filters` 在发请求前抛 `ValueError`。放过去拿到的是 `total=0`，与"这一维真的没有内容"在
+  响应里是同一个形态（行业这一维 2026-11-27 两枚检索词各一发验过同形）。
 - 效力等级八档里**有三档名下不录时效**（财税文件、其他文件、工作通知）：这三档与 `--aging`
   同发必回 0 条，`build_filters` 现在在发请求前就拦下来并说清换哪一维；另外五档同发是正常
   交集（实测法律 9→8、税务规范性文件 681→216），不拦。逐档读数与成因见
@@ -194,7 +196,7 @@ NPC 法规库那个接口（`tax_search.py`）经实测是**从 1 起算**，两
 
 ### search5 收窄维度的命令行
 
-七个收窄开关在 `tax_web_search.py` 与 `tax_fgk.py` 上共用一套（`build_filters` 拼参数），
+八个收窄开关在 `tax_web_search.py` 与 `tax_fgk.py` 上共用一套（`build_filters` 拼参数），
 都可选，不填就等于不发这一维；另有 `--order` 与 `--all-labels` 两项检索选项
 （`search_opts_from_args` 收，走 `search_chinatax` 的关键字参数）：
 
@@ -214,6 +216,10 @@ python scripts/tax_web_search.py "增值税" --cwrq-from 2024-01-01 --cwrq-to 20
 # 这两维在文件类标签基数下各收到多少，读 NOTE.md 第四节那张表）
 python scripts/tax_web_search.py "增值税" --aging 全文有效
 python scripts/tax_web_search.py "增值税" --effect-level 财税文件
+
+# 行业分类（十一档；值域是页面「行业分类」控件那一串，不是响应分面那十二档——
+# 分面多出来的 null 档本层不发，理由见 search_source/chinatax/NOTE.md 第三节那一段）
+python scripts/tax_web_search.py "增值税" --industry 社会民生
 
 # 换排序：date_desc 发的是 orderBy=1（成文日期最新在前；orderBy=2 排的是类别不是日期）
 python scripts/tax_web_search.py "增值税" --order date_desc --size 8

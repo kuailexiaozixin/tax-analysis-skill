@@ -124,10 +124,11 @@ rowspan 的"产品种类"被带到它盖住的每一行：
 走 `search_chinatax` 的关键字参数：`label` 默认发 `FILE_LABELS` 那十个文件类标签
 （`--all-labels` 关），`orderBy` 由 `--order` 选（默认相关度），`column` 由调用方直接给
 （`tax_web_search.py` 自己的命令行没有这一枚开关，实际用它的是 `tax_cases.py` 的
-`CASE_COLUMN=5741`，「骗取出口退税」189 收窄到 119）。函数层与命令行都不发的还剩
-`xxgkTaxPolicy`、`xxgkFormulatedYear`、行业那一维（请求侧生效的那枚是 `industrytypename`，
-发 `xxgkIndustryType` 回 0，见第三节；本子技能三路取数代码（`tax_web_search`／`tax_fgk`／`tax_gov_list`）
-没有一处发 `industrytypename`）、
+`CASE_COLUMN=5741`，「骗取出口退税」189 收窄到 119）。行业那一维**已于 3.62.47 接进命令行**：
+生效的键名是 `industrytypename`（发 `xxgkIndustryType` 回 0，它只是响应分面侧的名字，见第三节），
+开关 `--industry`、值域 `INDUSTRY_VALUES` 十一档，取值域与逐档读数见第三节「行业那一维接进来时
+按页面控件给值域」那一段。函数层与命令行都不发的还剩
+`xxgkTaxPolicy`、`xxgkFormulatedYear`、
 `likeDoc`、`searchWordMd5`。
 往命令行加新维度时按行核对这张表，不要凭记忆改。
 
@@ -493,6 +494,33 @@ flk 那一路相反——`pageSize` 照请求给行：同一枚「环境保护�
 所以这一枚分面不随 `label` 白名单换基数，不能拿它去反推任一基数下的命中构成——它与
 `effectLevelList` 那种"桶值与单发 `total` 不同基数"的情况不同，压根就不动。
 
+### 行业那一维接进来时按页面控件给值域（2026-11-27 六批发，间隔 4 秒）
+
+`--industry` 的值域**取页面「行业分类」控件那十一档**，不取分面那十二档：结果页 HTML（46,078 字节）里
+`industrytyp` 零命中，这一维的控件不是 `select` 而是 `<ul class="hyfl">` 那串列表锚（@18039），
+印出来的正是农林业／工业／服务业／金融业／房地产业／社会民生／科技创新／创业就业／绿色发展／
+区域发展／涉外**十一枚**，每枚后面跟 `（0）` 占位由 JS 填数——**列表里没有 `null` 那一档**。
+分面多出来的 `null` 是「条目根本没录行业」，不是行业名：把它做成一条筛选命令会把"没录行业"
+说成一种行业，要这个语义只能取回后读条目自己认，所以 `INDUSTRY_VALUES` 不收它。
+
+同日逐档单发（`industrytypename` 叠在默认的文件类标签基数上，检索词「增值税」基线 1910）：
+
+| 发的值 | `total` | 读法 |
+|---|---|---|
+| 不发这一维 | 1910 | 基线；`industrytypename=` 空串同发也是 1910，空串等于不发 |
+| `社会民生` | 70 | 与 2026-10-20 那批逐档读数一致 |
+| `工业` | 77（全站基数） | 全站基线那发是 12876；同批发 `label=` 空串也是 12876、字节 69,757 逐字节相同，**空串与不发这一枚等价** |
+| `农林业` | 49 | 控件十一档之一 |
+| `null` 字面串 | 66 | 站方收、能收窄（分面那档 68），但本层不发：见上一段 |
+| `不存在的行业` | **0** | HTTP 200、合法 JSON、24,164 字节，`rows=0` |
+| `不存在的行业`（换检索词「留抵退税」，基线 58） | **0** | 同一形状，24,529 字节 |
+
+归零跟着键走、不跟着检索词走（两枚检索词各一发都归零），与 `xxgkAging`／`xxgkEffectLevel` 的域外
+形态一致，所以 `build_filters` 在发请求前按值域拦：域外值与纯空白都抛 `ValueError`。另外两枚对照：
+`社会民生` × `xxgkEffectLevel=财税文件` 是 58（正常交集，这一维与效力等级同发没有归零陷阱，
+与「时效 × 效力等级三档」那件事不同源），`留抵退税` × `工业` 是 3（值域内该发就发得出来）。
+
+
 ### 标签那一维收的是真实标签名（2026-10-20 五发）
 
 取样口径：`GET /search5/search/s`，`siteCode`／`type`／`pageSize=10`／`pageNum=0`／`orderBy=5`／`column=""`
@@ -553,7 +581,7 @@ flk 那一路相反——`pageSize` 照请求给行：同一枚「环境保护�
 
 ## 五、复测入口
 
-这一层没有固定探针脚本，复测按逐枚重发走。下面六步都只发 HTTP，**零模型调用**。
+这一层没有固定探针脚本，复测按逐枚重发走。下面七步都只发 HTTP，**零模型调用**。
 
 ```bash
 # 1. 值域常量与命令行回显（零请求）
@@ -579,6 +607,12 @@ python -c "import sys;sys.path.insert(0,'scripts');import tax_web_search as W;pr
 # 6. UA 那一档（2026-11-27 补测）：同一 URL 只换 User-Agent 各发一发，看 403 与 200 翻转
 #    （当日读数：requests 默认串与含 HeadlessChrome 字面量两形 403、空串与正常浏览器串 200；
 #    Referer 加不加不参与，所以别拿无头浏览器验这一发的可达性）
+
+# 7. 行业那一维（2026-11-27 接进来）：先发 --industry 的域外值看拦不拦，再发值域内一档读 total
+python -X utf8 scripts/tax_web_search.py "增值税" --industry 不存在的行业   # 应在发请求前 ValueError
+python -X utf8 scripts/tax_web_search.py "增值税" --industry 社会民生       # 当日 70 条（基线 1910）
+#    十一档值域以结果页 `<ul class="hyfl">` 那串列表锚为准（第 3 步取回的 HTML 里 grep hyfl）；
+#    分面比控件多出来的 null 档本层不发，理由见第三节那一段
 ```
 
 第 2 步那两枚 `--aging` 与 `--effect-level` **同发只有三档会被程序拦下**（财税文件／其他文件／

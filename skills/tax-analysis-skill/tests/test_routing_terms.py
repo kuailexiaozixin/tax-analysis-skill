@@ -659,6 +659,90 @@ def test_aging_and_effect_level_domains():
     print("  [PASS] 时效五档、效力等级八档逐档放行，域外写法（含 NPC 值域）报错")
 
 
+def test_industry_domain_is_the_eleven_names_on_the_page():
+    """行业维（industrytypename）十一档逐档放行、域外写法与 "null" 档在发出前拦下。
+
+    为什么在这一层拦：接口对不认识的值不发错误码，回的是 `total=0`——两枚检索词
+    各验一发（「增值税」基线 1910 配越界值回 0、「留抵退税」基线 58 配越界值也回 0），
+    与「这一维真的筛空了」「库里没有」在响应里是同一个形态。判据与逐档读数见
+    search_source/chinatax/NOTE.md 里行业那一节。
+
+    "null" 这一档站方分面里确实有（增值税×文件类标签下 68 条），发字符串 "null"
+    也真能收窄到 66，但本层不收进白名单：那一档是「条目没录行业」，语义是取回后
+    读条目字段自己认，把它做成一条筛选命令会把"没录行业"说成一种行业。
+    变异验证：把 "null" 加进 INDUSTRY_VALUES，本条报红。
+    """
+    assert len(W.INDUSTRY_VALUES) == 11, W.INDUSTRY_VALUES
+    for name in W.INDUSTRY_VALUES:
+        assert W.build_filters(industry=name) == {"industrytypename": name}
+    # 两侧带空白的合法值放行
+    assert W.build_filters(industry=" 工业 ")["industrytypename"] == "工业"
+    # 空串＝不发这一维
+    assert W.build_filters(industry="") == {}
+    for blank in ("   ", "\t", "\n"):
+        try:
+            W.build_filters(industry=blank)
+            raise AssertionError(f"纯空白行业却放行：{blank!r}")
+        except ValueError:
+            pass
+    for bad in ("null", "行业", "制造业", "工业,服务业", "农林", "信息传输"):
+        try:
+            W.build_filters(industry=bad)
+            raise AssertionError(f"域外行业却放行：{bad!r}")
+        except ValueError:
+            pass
+    print("  [PASS] 行业十一档逐档放行，null 档与域外写法在发出前报错")
+
+
+def test_industry_key_reaches_the_sent_query_verbatim():
+    """行业维发出去的键名必须是 industrytypename 逐字。
+
+    接口这一族有两枚同义名字：请求侧生效的是 industrytypename，响应分面侧那枚叫
+    xxgkIndustryType——发后者回 0（2026-10-02 起四种组合都是 0，读数记在
+    search_source/chinatax/NOTE.md 第二节）。键名写错一个字母接口静默忽略，
+    调用方看到的是一条没收窄的结果，还以为行业筛过了。
+    变异验证：把 out["industrytypename"] 改成 xxgkIndustryType，本条报红。
+    """
+    saved = W.requests.get
+    sent = []
+
+    def fake(url, params=None, **kw):
+        sent.append(dict(params))
+        return _Resp(_payload(1, [_ITEM]))
+
+    try:
+        W.requests.get = fake
+        W.search_chinatax("增值税", filters=W.build_filters(industry="社会民生"))
+    finally:
+        W.requests.get = saved
+
+    q = sent[0]
+    assert q["industrytypename"] == "社会民生", q
+    assert "xxgkIndustryType" not in q, q
+    print("  [PASS] 行业维以 industrytypename 逐字进入发出的 query")
+
+
+def test_industry_flag_help_names_the_domain():
+    """--industry 的帮文要报出十一档值域与「null 档不发」这条口径。
+
+    照着命令行事的人只会看到 --industry 四个字；值域不写进帮文，他要么猜一个
+    行业名（发出去回 0、像筛空了），要么以为这一维不能用。与 --aging /
+    --effect-level 两枚开关的帮文同形。
+    变异验证：删掉帮文里的值域串，本条报红。
+    """
+    parser = argparse.ArgumentParser()
+    W.add_filter_args(parser)
+    text = parser.format_help()
+    assert "--industry" in text, text
+    # argparse 会把长 help 折行（实测「绿色发」与「展」被拆到两行），所以值域逐档
+    # 比对要在去掉空白的文本上做——判的是"这十一档名都印出来了"，不是排版。
+    flat = "".join(text.split())
+    assert "industrytypename" in flat, text
+    for name in W.INDUSTRY_VALUES:
+        assert name in flat, (name, text)
+    print("  [PASS] --industry 帮文列出十一档值域与接口键名")
+
+
 def test_aging_with_unrecorded_effect_level_blocked_before_send():
     """效力等级那三档不录时效的族，与时效同发在发出前就报错——接口对这一组回
     total=0，与"库里确实没有"同一个形态，放过去就是把必然为空的查询当成结论。

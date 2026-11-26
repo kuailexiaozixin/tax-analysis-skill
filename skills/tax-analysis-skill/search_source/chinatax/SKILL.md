@@ -102,7 +102,10 @@ fgk 域的详情页给正文与注释、www 域的 `getFileListByCodeId` 给整�
   （配 `docYear=2023` 归 0，去空格才有 25 条）。`--doc-type` 自动去掉内部空白，命令行照页面写法给也能过。
 - 行业那一维的键名是 `industrytypename`，不是 `xxgkIndustryType`：前者在「增值税」×文件类标签的基数下
   回 70（社会民生），后者回 0——`xxgkIndustryType` 只出现在响应的分面侧，不是请求参数。
-  这一维仍未接进命令行，接的时候按 `NOTE.md` 那十二档读数给值。
+  **2026-11-27 已接进命令行**：`--industry`，值域 `INDUSTRY_VALUES` 十一档按页面「行业分类」控件
+  那一串取（不是分面那十二档——分面多出来的 `null` 是「条目没录行业」，做成筛选会把"没录行业"
+  说成一种行业）；域外值与纯空白在发请求前抛 `ValueError`，因为接口对域外值回 `total=0`，
+  与"这一维真的筛空了"在响应里同一个形态。读数与拦法见 `NOTE.md` 第三节那一段。
 - `label` 白名单 `FILE_LABELS` 那十枚与站点「综合」tab 提交的那一串是**同一集合**（双向差集为空），
   不是本仓库自创的收窄；代价是标在「视频政策解读」「图片政策解读」上的法规库条目会被漏掉，
   要连它们一起取才加 `--all-labels`。这一维换的是翻页窗口的成分（「转让定价」全站前 3 屏 0 条法规库条目、
@@ -247,9 +250,9 @@ python -c "import sys;sys.path.insert(0,'scripts');import tax_web_search as W;pr
    才是取失败；取失败只报原因，不得据标题推测条文。
 7. **不给规范层级与主依据挑选**。排序与分桶只到"取回哪些条"为止，`effect_level` 与
    `document_number` 原样带回去；层级归 `tax_evidence.rank_of`、主依据归 `tax_evidence.pick_primary`。
-8. **不给未接的维度**。行业（`industrytypename`）、`xxgkTaxPolicy`、`xxgkFormulatedYear`、
-   `likeDoc`、`startTime` 那族日期都没接进命令行；要用的话按 `NOTE.md` 对应小节那几行的读数给值，
-   别凭记忆加参数。
+8. **不给未接的维度**。`xxgkTaxPolicy`、`xxgkFormulatedYear`、`likeDoc`、`startTime` 那族日期
+   都没接进命令行；要用的话按 `NOTE.md` 对应小节那几行的读数给值，别凭记忆加参数。
+   行业那一维已接（`--industry`），它不属于这一条。
 
 ## 命令依赖
 

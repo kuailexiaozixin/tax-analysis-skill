@@ -451,7 +451,7 @@ def item8(session, kw):
         if m:
             declared.add(m.group(1))
         _line("%s（/%s/node_%s%s）" % (name, dir_, nid,
-                                       "" if page_note == "1" else "_%s" % page_note),
+                                       "" if page_no == "1" else "_%s" % page_no),
               "精确串 %d、前缀 %d、token %s、地址形状 %d 处、切出本栏段 %s、"
               "交回 %d 行、他栏 %d 行、控件 pages=%s、标题带日期行的锚 %d 处"
               % (exact, prefix,

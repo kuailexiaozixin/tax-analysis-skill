@@ -19,6 +19,7 @@
 import ast
 import contextlib
 import io
+import builtins
 import json
 import os
 import re
@@ -4858,6 +4859,77 @@ class TestCtaxSubSkillDocHooks(unittest.TestCase):
         self.assertEqual(1, len(rows), "⑪ 数据源表里中国税网那一行要只有一处")
         self.assertIn("源键 `ctax`", rows[0],
                       "⑪ 那一行也要写明它在 ④ 的默认名单里")
+
+
+# ── 常驻探针自己不能带未定义的名字：一次笔误吃掉整项读数 ──────────────────
+PROBE_FILES = sorted((ROOT / "search_source").glob("*/probe_*.py"))
+
+
+def _unbound_names(src):
+    """返回「被读却从没绑定过」的名字。模块级 with/comprehension/except 都算绑定。"""
+    tree = ast.parse(src)
+    bound = set(dir(builtins))
+    used = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                bound.add(node.id)
+            else:
+                used.append((node.id, node.lineno))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+            a = getattr(node, "args", None)
+            if a is not None:
+                for x in list(a.posonlyargs) + list(a.args) + list(a.kwonlyargs):
+                    bound.add(x.arg)
+                if a.vararg:
+                    bound.add(a.vararg.arg)
+                if a.kwarg:
+                    bound.add(a.kwarg.arg)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for al in node.names:
+                bound.add((al.asname or al.name).split(".")[0])
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for it in node.items:
+                if it.optional_vars is not None:
+                    for x in ast.walk(it.optional_vars):
+                        if isinstance(x, ast.Name):
+                            bound.add(x.id)
+        elif isinstance(node, ast.comprehension):
+            for x in ast.walk(node.target):
+                if isinstance(x, ast.Name):
+                    bound.add(x.id)
+    return sorted({(n, ln) for n, ln in used
+                   if n not in bound and not (n.startswith("__") and n.endswith("__"))})
+
+
+class TestProbeSelfInjury(unittest.TestCase):
+    """2026-11-26 那轮 `probe_ctaxnews.py` 第 8 项 14 页全打在
+    「取不到：name 'page_note' is not defined」上：`_measure` 的形参叫 `page_no`，
+    打印时打成了 `page_note`。15 发请求照样发出去，「实发/声明」对账一片祥和，
+    整项读数却一个都没落进汇总——这笔账只能由静态尺来对，不能由请求数来对。
+    """
+
+    def test_every_permanent_probe_has_no_unbound_name(self):
+        self.assertTrue(PROBE_FILES, "search_source 下应至少有一枚常驻探针")
+        for f in PROBE_FILES:
+            with self.subTest(probe=str(f.relative_to(ROOT))):
+                bad = _unbound_names(f.read_text(encoding="utf-8"))
+                self.assertEqual(bad, [], "%s 里有被读却从没绑定的名字：%s" % (f.name, bad))
+
+    def test_a_typo_like_the_one_that_ate_a_probe_item_is_caught(self):
+        # 反证：把那次的笔误照原样注回去，尺必须报红（否则上一条绿得没有依据）
+        src = (ROOT / "search_source" / "ctaxnews" / "probe_ctaxnews.py").read_text(encoding="utf-8")
+        self.assertIn('"" if page_no == "1" else "_%s" % page_no', src)
+        broken = src.replace('"" if page_no == "1" else "_%s" % page_no',
+                             '"" if page_note == "1" else "_%s" % page_note')
+        self.assertNotEqual(broken, src, "注入锚没命中，反证不成立")
+        bad = [n for n, _ in _unbound_names(broken)]
+        self.assertIn("page_note", bad)
 
 
 # ── flk 的 total 随参数换值：回显不许把它当命中数或可达页数 ──────────────────

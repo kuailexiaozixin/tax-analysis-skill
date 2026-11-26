@@ -2802,6 +2802,71 @@ class TestSogouWebSearch(unittest.TestCase):
         html = html.replace("</h3>", "</h3><div class=citeurl>2011-02-23</div>")
         self.assertEqual("2011-02-23", self._search(html)["results"][0]["date"])
 
+    def _site_none(self, site="shui5.cn", word="增值税", quote='"'):
+        """站点在手机入口自报「这个站内没有匹配内容」的那一档（2026-11-26 量到的形状）。"""
+        return ('<div class=results><div class={q}vrResult site-vr-none{q}>'
+                '<p class=site-text>抱歉，未找到“{s}”站内包含“{w}”的内容</p>'
+                '</div></div>').format(q=quote, s=site, w=word)
+
+    def test_site_none_class_is_a_real_zero_not_a_structure_error(self):
+        """真 0 条不能被写成取数失败：_zero_hit 在位、_error 不在位。"""
+        out = self._search(self._site_none())
+        self.assertNotIn("_error", out)
+        self.assertFalse(out.get("_fetch_failed"))
+        self.assertTrue(out.get("_zero_hit"))
+        self.assertEqual([], out["results"])
+
+    def test_a_header_with_no_items_is_still_read_as_a_structure_change(self):
+        """有表头没条目那一档（yanfa 页）仍报结构改版，不能被新判据一并吞掉。"""
+        html = ('<div class=vrResult><div class=vr-site190910><p class=site-text>'
+                '以下是网页“shui5.cn”中包含“研发费用加计扣除”的结果</p></div></div>')
+        out = self._search(html)
+        self.assertIn("结构可能改版", out["_error"])
+        self.assertTrue(out["_fetch_failed"])
+        self.assertNotIn("_zero_hit", out)
+
+    def test_the_site_none_name_in_a_script_is_not_a_zero_result(self):
+        """类名只出现在脚本里不算站点自报无结果——与 vrResult 同一枚理由。"""
+        html = ('<script>var t="site-vr-none vrResult";</script>'
+                '<p>请输入验证码</p>')
+        self.assertFalse(SOG._declares_no_site_results(html))
+        self.assertTrue(SOG._looks_like_verify_page(html))
+
+    def test_a_real_zero_page_gets_cached_but_a_structure_error_does_not(self):
+        """真 0 条可以缓存（这一轮跑成了）；结构改版每轮重取，不能把坏页钉住。"""
+        cache = tax_cache.CacheManager(enabled=True, namespace="sogou")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cache.dir = Path(tmp.name)
+        with mock.patch.object(SOG, "_cache", cache):
+            with mock.patch.object(SOG, "_fetch",
+                                   return_value=(self._site_none(), self.WEB, "", False)):
+                first = SOG.sogou_search("增值税", site="shui5.cn", size=5)
+            second = SOG.sogou_search("增值税", site="shui5.cn", size=5)
+        self.assertTrue(first.get("_zero_hit"))
+        self.assertFalse(first.get("_from_cache"))
+        self.assertTrue(second.get("_from_cache"), "真 0 条应当被记住")
+
+        with mock.patch.object(SOG, "_cache", cache):
+            broken = ('<div class=vrResult><h3>以下是网页“shui5.cn”中包含“甲”的结果</h3></div>')
+            with mock.patch.object(SOG, "_fetch",
+                                   return_value=(broken, self.WEB, "", False)):
+                bad = SOG.sogou_search("甲", site="shui5.cn", size=5)
+                again = SOG.sogou_search("甲", site="shui5.cn", size=5)
+        self.assertIn("结构可能改版", bad["_error"])
+        self.assertFalse(again.get("_from_cache"), "失败的那一轮不该进缓存")
+
+    def test_the_split_class_named_in_code_is_the_one_documented(self):
+        """分流用的 class 串改了而文档没跟上，这一条要报红（判定值不许漂）。"""
+        code = (ROOT / "scripts" / "tax_sogou.py").read_text(encoding="utf-8")
+        m = re.search(r'_SITE_NONE_CLASS = "([^"]+)"', code)
+        self.assertTrue(m, "tax_sogou 里的分流常量不在了")
+        note = (ROOT / "search_source" / "sogou" / "NOTE.md").read_text(encoding="utf-8")
+        self.assertIn(m.group(1), note,
+                      "代码认的 class 与 NOTE 记的不是同一串")
+        self.assertIn(m.group(1), (ROOT / "search_source" / "shui5" / "NOTE.md")
+                      .read_text(encoding="utf-8"))
+
     def test_full_page_cache_is_shared_across_requested_sizes(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -3111,6 +3176,25 @@ class TestShui5ChannelRouting(unittest.TestCase):
         self.assertIn("两条检索通道都没取到", r["_error"])
         self.assertIn("搜狗 被拦", r["_error"])
         self.assertIn("站内 没走成", r["_error"])
+
+    def test_a_real_zero_from_sogou_is_blamed_as_zero_not_as_failure(self):
+        """3.62.40：site-vr-none 那档判成真 0 条后，归因句是「0 条」，不进 failed。"""
+        r, calls = self._run({"total": 0, "results": [], "_zero_hit": True},
+                             {"results": [SH._row_dict("站内解读", P1, "2026-11-20", "摘要")],
+                              "total": 1, "_status": "命中 1 条"})
+        self.assertEqual(["搜狗", "站内"], calls, "真 0 条照样退回站内")
+        self.assertEqual("0 条", r["_channels"]["搜狗"])
+        self.assertNotIn("_error", r)
+        self.assertEqual("站内", r["_channel"])
+
+    def test_a_structure_error_from_sogou_still_says_没走成(self):
+        """有表头没条目那一档仍是失败：归因句不能与真 0 条混成同一句。"""
+        r, calls = self._run({"total": 0, "results": [], "_fetch_failed": True,
+                              "_error": "搜狗返回了结果区，但没有解析出可用直链：页面结构可能改版"},
+                             {"results": [SH._row_dict("站内解读", P1, "2026-11-20", "摘要")],
+                              "total": 1, "_status": "命中 1 条"})
+        self.assertEqual(["搜狗", "站内"], calls)
+        self.assertTrue(r["_channels"]["搜狗"].startswith("没走成"))
 
 
 def _xwt2_row(n, column="财税实务"):

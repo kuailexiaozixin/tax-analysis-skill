@@ -55,6 +55,19 @@ ART_IMAGE = '''<html><body><div class="newsdetatext"><div class="pic">
 
 URL_559 = "https://www.ctaxnews.net.cn/paper/pc/con/202611/24/content_241559.html"
 URL_537 = "https://www.ctaxnews.net.cn/paper/pc/con/202611/24/content_241537.html"
+# 2026-11-26 实测的版面页形状：整版 PDF 挂在 data-url 上，同一行还跟着
+# 「您没有下载权限」那句前端文案。两件事留在同一枚夹具里，才反证得了当年
+# 「没有任何 .pdf 链接」那句假话是怎么写出来的（只查了 href 与 src）。
+LAYOUT_WITH_PDF = '''<html><body>
+<div class="newsTitle"><em>第01版：税收要闻</em></div>
+<a href="../../../con/202611/25/content_241900.html">甲</a>
+<a href="javascript:;" class="pdf-btn" onclick="downloadPDF(this)"
+   data-url="../../../att/202611/25/c963147d-a52a-4509-a201-861d4308ad79.pdf" target="_self"></a>
+<span class="download-warning">您没有下载权限</span>
+<style>.pdf-btn { background: red }</style>
+</body></html>'''
+PDF_URL = ('https://www.ctaxnews.net.cn/paper/pc/att/202611/25/'
+           'c963147d-a52a-4509-a201-861d4308ad79.pdf')
 
 
 class _CacheStub:
@@ -169,6 +182,103 @@ class TestExtractors(unittest.TestCase):
         blank = P._row_of("<html><body>什么都没有</body></html>", "u")
         self.assertTrue(blank.get("_empty_body"))
         self.assertNotIn("_image_piece", blank)      # 取空正文不谎称图片稿
+
+
+class TestEditionPdf(unittest.TestCase):
+    """整版 PDF 那一层（3.62.41）：址只在 data-url 上——不猜、不下载。
+
+    当年 NOTE 那句「版面页与文章页都没有任何 .pdf 链接」的依据是只查 href 与
+    src。真实页面每版挂着一枚 data-url（三天 × 八版 24/24 全中），址名是 uuid4，
+    拼不出来，所以生产只现读；且只交回链接——一版实测 0.8～5.2MB，本机也没有
+    PDF 文本层解析器。按钮旁那句「您没有下载权限」是前端 JS 判的，HTTP 不拦
+    （2026-11-26 干净会话实测 200 / application/pdf / 头 %PDF-1.4）。
+    """
+
+    def test_pdf_url_read_from_data_url_and_made_absolute(self):
+        got = P._edition_pdf(LAYOUT_WITH_PDF, LAYOUT_BASE)
+        self.assertEqual(got, PDF_URL)
+        self.assertIn('/att/', got)              # 址在 att 段，不是 layout/con
+        self.assertTrue(got.endswith('.pdf'))
+
+    def test_href_and_src_alone_would_have_missed_it(self):
+        # 钉的是当年那句假话的成因：只看 href/src 属性，这页一枚 .pdf 都找不到；
+        # 同一页 data-url 上有一枚。
+        near_href = []
+        for i in range(len(LAYOUT_WITH_PDF) - 4):
+            if LAYOUT_WITH_PDF[i:i + 4] != '.pdf':
+                continue
+            window = LAYOUT_WITH_PDF[max(0, i - 12):i]
+            if 'href=' in window or 'src=' in window:
+                near_href.append(window)
+        self.assertEqual(near_href, [])
+        self.assertTrue(P._edition_pdf(LAYOUT_WITH_PDF, LAYOUT_BASE))
+
+    def test_a_page_without_the_attribute_yields_no_url(self):
+        self.assertEqual(P._edition_pdf(LAYOUT, LAYOUT_BASE), '')
+        self.assertEqual(P._edition_pdf('', LAYOUT_BASE), '')
+        self.assertEqual(P._edition_pdf(None, LAYOUT_BASE), '')
+
+    def test_the_css_and_js_mentions_are_not_a_link(self):
+        # 样式类名与 JS 字符串里都出现 .pdf 字样，但没有 data-url：不算址。
+        html = ('<style>' + '.pdf-btn{color:red}' + '</style>'
+                + '<script>var mark=' + chr(39) + '.pdf' + chr(39) + ';</script>')
+        self.assertIn('.pdf', html)
+        self.assertEqual(P._edition_pdf(html, LAYOUT_BASE), '')
+
+    def test_fetch_edition_carries_pdf_url_without_extra_requests(self):
+        with _Scenario(layout=(200, LAYOUT_WITH_PDF, '')) as s:
+            out = P.fetch_edition('2026-11-25', edition=1)
+        self.assertEqual(out['pdf_url'], PDF_URL)
+        self.assertEqual(out['network'], s.n)      # 解 PDF 不多打一发
+        self.assertEqual(out['_status'], '')
+
+    def test_no_issue_and_failed_rounds_still_carry_an_empty_pdf_url(self):
+        # 新增那枚键不许改动另两档的形状：没出报与取数失败都得带空串。
+        with _Scenario(layout=(404, '', '')):
+            miss = P.fetch_edition('2026-11-19', edition=1)
+        with _Scenario(layout=(500, '', '')):
+            bad = P.fetch_edition('2026-11-19', edition=1)
+        for one in (miss, bad):
+            self.assertEqual(one['pdf_url'], '')
+        self.assertTrue(miss['_status'].startswith('no-issue：'))
+        self.assertTrue(bad['_status'].startswith('failed｜'))
+
+    def test_bad_date_shape_still_has_the_key(self):
+        out = P.fetch_edition('下周三', edition=6)
+        self.assertIn('pdf_url', out)
+        self.assertEqual(out['pdf_url'], '')
+
+    def test_cached_round_keeps_the_pdf_url(self):
+        with _Scenario(layout=(200, LAYOUT_WITH_PDF, '')):
+            first = P.fetch_edition('2026-11-25', edition=1)
+            second = P.fetch_edition('2026-11-25', edition=1)
+        self.assertTrue(second.get('_from_cache'))
+        self.assertEqual(second['pdf_url'], first['pdf_url'])
+
+    def test_render_shows_the_link_and_explains_the_button_text(self):
+        out = {'date': '2026-11-25', 'edition': 1, 'edition_name': '税收要闻',
+               'url': LAYOUT_BASE, 'pdf_url': PDF_URL, 'network': 2,
+               '_status': '', 'articles': []}
+        txt = P.render(out)
+        self.assertIn('整版 PDF', txt)
+        self.assertIn(PDF_URL, txt)
+        self.assertIn('您没有下载权限', txt)   # 那句前端文案要在回显里被解释掉
+
+    def test_render_admits_when_the_page_carries_none(self):
+        out = {'date': '2026-11-25', 'edition': 1, 'edition_name': '税收要闻',
+               'url': LAYOUT_BASE, 'pdf_url': '', 'network': 2,
+               '_status': '', 'articles': []}
+        txt = P.render(out)
+        self.assertIn('没挂', txt)
+        self.assertIn('不猜址', txt)
+
+    def test_the_anchor_named_in_the_note_is_the_one_the_code_reads(self):
+        # 文档只指 data-url 这一处；代码里那把锚同名，漂了就报红。
+        code = (HERE.parent / 'scripts' / 'tax_paper.py').read_text(encoding='utf-8')
+        self.assertIn('_PDF_DATA_URL_RE', code)
+        self.assertIn('data-url', code)
+        note = (HERE.parent / 'search_source' / 'netpaper' / 'NOTE.md')
+        self.assertIn('data-url', note.read_text(encoding='utf-8'))
 
 
 class TestEditionStatuses(unittest.TestCase):

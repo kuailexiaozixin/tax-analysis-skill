@@ -17,6 +17,7 @@ description: 中国税务报网络报（数字报，www.ctaxnews.net.cn）按日
 ## 这一层负责什么、不负责什么
 
 - 负责：按日期取版、按关键词扫版、图片稿标记、正文与图注分开交回。
+- 整版 PDF 只交回链接不下载：`fetch_edition` 一并给 `pdf_url`（版面页 `data-url` 现读，址是 uuid 拼不出）。页面那句「您没有下载权限」是前端按钮的 JS，址本身匿名可取——形状与实测在 `search_source/netpaper/NOTE.md` 第二节。
 - **不参与多源聚合**（不在 `DEFAULT_SOURCES` 六源里）。理由不是性能：同一篇稿在本报与中国税网常用两副标题（全题与半题），而聚合层按标题字符相似度去重，进了聚合就会把两条不同地址的稿子错并成一条。实测读数在 `search_source/netpaper/NOTE.md` 第四节。
 - 报纸是媒体口径，不是依据。报道里提到的政策要回到 NPC 或税务总局原文再定级（`references/evidence_grading.md`）。
 

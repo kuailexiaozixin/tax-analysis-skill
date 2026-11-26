@@ -1530,6 +1530,31 @@ class TestCourtSharedBusinessGuard(unittest.TestCase):
             {"code": 0, "msg": "获取成功！",
              "data": {"datas": [], "totalCount": 0}}))
 
+    def test_the_court_sentence_does_not_vouch_for_a_status_code(self):
+        """判据只看信封里的 code/success，它收不到 status——所以句子不许替状态码作保。
+
+        2026-11-26 复量：案例库 `/cpws_al_api/api/user/recordSearchLog` 回的是**真 401**
+        （首测 2026-11-25 也记过这一枚，只是判据当时没对着它跑）。旧句子开口就是
+        「法院站回 HTTP 200 但业务失败」，喂给这封真 401 就成了一句假话——而这句话
+        是要进日志、进答句的，读者会照着它去查「为什么 200 会失败」。
+        """
+        for payload in ({"code": 401, "msg": "用户未登录！"},
+                        {"code": 9, "success": False, "result": None}):
+            with self.subTest(code=payload.get("code")):
+                reason = tax_http.court_business_error(payload)
+                self.assertIsNotNone(reason, "这两封都得报，别退回静默")
+                self.assertNotIn("HTTP 200", reason,
+                                 "判据看不见状态码，句子里不许写死 HTTP 200")
+
+    def test_the_status_code_claim_lives_in_the_note_not_the_message(self):
+        """「多数失败用 200 装着」这句是**统计陈述**，留在文档与注释里；
+        真读数（401 那一枚）与它并列时才不至于变成绝对断言。这里钉住文档面。"""
+        for rel in ("search_source/wenshu/NOTE.md", "search_source/rmfyalk/NOTE.md"):
+            with self.subTest(note=rel):
+                t = (ROOT / rel).read_text(encoding="utf-8")
+                self.assertIn("2026-11-26", t,
+                              "这份 NOTE 没记 2026-11-26 那轮复量，判据句改口的依据就没了")
+
 
 # ── ① NPC 闸要包住下载路径 ────────────────────────────────────────────────
 class TestNpcGateCoversDownload(unittest.TestCase):

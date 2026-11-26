@@ -1,7 +1,8 @@
 # 人民法院案例库（rmfyalk）实测档案
 
-> 本文件记 2026-11-25 首次实测的全部读数。此前本机对这个站**一次请求都没发过**，
-> 所以 `references/source_defects.md` 里原先只写"未实现、没有量过就没有记录"。
+> 本文件记 2026-11-25 首次实测与 2026-11-26 复量两轮的全部读数。此前本机对这个站
+> **一次请求都没发过**，所以 `references/source_defects.md` 里原先只写"未实现、
+> 没有量过就没有记录"。
 > 现在墙的形状有了，但仍**没有接入**：本仓库没有任何代码路径向这座站取数。
 
 ## 一、页面层：匿名可达
@@ -41,6 +42,25 @@
 2. **失败用 HTTP 200 装着**，只有 `recordSearchLog` 用真 401。所以判据只能是业务码，
    `status_code == 200` 什么也证明不了。
 3. **补浏览器头不松墙**——UA、Referer、X-Requested-With 都加上，读数一字不差。
+
+### 2026-11-26 复量（十发，同脚本 `probe_rmfyalk_wall.py`，一发一停 2.6 秒）
+
+结论：**墙没有动，读数与 11-25 逐字节同形**——search 四档 / searchTop10 /
+getGroupDatas / getUserInfo 仍是 200 / 30 字节 / `{"msg":"未登录","code":401}`；
+`recordSearchLog` 仍是 **真 401** / 39 字节 / `{"msg":"用户未登录！","code":401}`；
+首页 200 / 8555 字节、列表页 200 / 11261 字节不变。唯一差异是
+`getGdLoginUrl` 那发从 384 字节变成 392 字节——它回的是带 `signature`/`state`
+的授权地址，这两枚本来就是动态串，形状没变。
+
+复量真正量出来的是**自家判据的一句假话**（本轮改口点）：
+`tax_http.court_business_error` 旧句子开口就是「法院站回 HTTP 200 但业务失败」，
+可这个函数**收不到 status**——把 `recordSearchLog` 那封真 401 的响应体喂进去，
+它照样回一句「回 HTTP 200」。判据分支本身全对（该报的报、该放的放、非 dict
+不炸），错在句子替状态码作了保，而这句是要进日志、进答句的。3.62.42 起句子改成
+「法院站这封响应是业务失败（code=…）」，「多数失败用 200 装着」这句统计陈述
+留在本文档与函数注释里，不再进运行时句子。常驻用例
+`tests/test_source_defects.py::TestCourtSharedBusinessGuard::test_the_court_sentence_does_not_vouch_for_a_status_code`
+用这两封真读数钉住它。
 
 ## 三、前端调用原文（将来接入时照这个发）
 

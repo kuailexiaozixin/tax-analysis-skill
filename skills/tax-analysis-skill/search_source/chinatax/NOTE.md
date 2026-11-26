@@ -156,7 +156,8 @@ rowspan 的"产品种类"被带到它盖住的每一行：
 | `xxgkEffectLevel=其他文件` | 61 | |
 | `xxgkEffectLevel=工作通知` | 190 | |
 | `xxgkEffectLevel=财税文件` + `xxgkAging=全文有效` | 0 | 两维同发归零，成因见下面「效力等级与时效同发为什么归零」那一小段 |
-| `likeDoc=1` | 1908 | 与基线同值，但**不能读成"这一维不起作用"**：全站基数上发 `likeDoc=0` 把 13152 换成 16199／16919（见下文单发表那一行）。两处合起来的读法只能是"标签基数上看不出差别、全站基数上会换命中数"，本层两种基数都不发这一枚 |
+| `likeDoc=1` | 1908 | 与基线同值，但**不能读成"这一维不起作用"**——它只是这一档取值恰好撞回基线，见下一行 `likeDoc=0` 的读数 |
+| `likeDoc=0` | 1952 | 2026-11-27 首发（同参数不发这一枚是 1910，发 `likeDoc=0` 得 1952，多 42 条）。旧那一行只测过 `likeDoc=1`，所以本表曾写成"标签基数上看不出差别"，那是**没测过这一档**、不是这一维不起作用。全站基数同样会换（13152⇒16199／16919，见那张全站单发表）。⇒ `likeDoc` 在两种基数上都会换命中数，本层两种基数都不发这一枚 |
 | `xxgkIndustryType=科技创新` | 0 | 2026-10-02 四种组合都测过：全站×增值税、全站×空检索词、白名单×增值税、白名单×空检索词，一律 0（同基数不发这一维依次是 13152 / 43105 / 1908 / 5676）。这一枚键名只出现在响应的分面侧，不是请求参数；请求侧能收窄的那枚是 `industrytypename`（第四节那张表那一行），取值域与单发读数见第三节 |
 
 ### 效力等级与时效同发为什么归零（2026-10-20 四发）
@@ -508,7 +509,7 @@ flk 那一路相反——`pageSize` 照请求给行：同一枚「环境保护�
 | 发文字号那一组 | `docType`/`docYear`/`docNo` 三枚一起拼；只对 `docType == "财政部 税务总局公告"` 这一枚去空格换成不带空格写法 | 页面印的是带空格的名称，接口收的是不带的；`--doc-type` 通用去掉内部空白，覆盖站点那一条硬编码 |
 | 制定年份 | `xxgkFormulatedYear` 取「发文年份」下拉框，注释就写着"发文年份" | 与 `docYear` 分属两枚键，读的是不同字段（见第三节那两行） |
 | 行业 | `industrytypename` 拼在查询串最后一位，取「行业分类」下拉框 | 行业维的键名以这一行为准，`xxgkIndustryType` 是分面那一侧的名字 |
-| 固定项 | `public.js` 拼的结果页地址里恒带 `&likeDoc=0&wordPlace=0&indexCode=1`，`getSearch.js` 那条高级搜索串里也带 `&orderBy=5&likeDoc=0&indexCode=1`；`participleRule` 与 `type` 都取 `data-id`；`userName` **不是常量**——文件里是 `var userName= ""` 打底，随后由 `/service/jzxx/isLogin.do` 的回显把 `result.userid` 覆写进去，两条 URL 末尾拼的都是那个变量 | 分开说三件事：① `indexCode` 单发不改命中（第二节那行 13152），"页面恒发同一个值"只在这一枚上能当旁证；② `likeDoc` **会**换命中——不发是折叠过的 13152，发 `likeDoc=0` 得 16199／16919（第二节那一行），而 AJAX 那份 `dataParms` 里根本没有这一枚（只在两条 URL 串里出现），所以"结果页地址那一发"与"本层这一发"不是同一份集合。这条只登记到"这一枚会换命中、且页面与本层的默认不同"为止，界面实际渲染出的是哪一份本机没对过；③ `userName` 要按登录态读，未登录才是空串 |
+| 固定项 | `public.js` 拼的结果页地址里恒带 `&likeDoc=0&wordPlace=0&indexCode=1`，`getSearch.js` 那条高级搜索串里也带 `&orderBy=5&likeDoc=0&indexCode=1`；`participleRule` 与 `type` 都取 `data-id`；`userName` **不是常量**——文件里是 `var userName= ""` 打底，随后由 `/service/jzxx/isLogin.do` 的回显把 `result.userid` 覆写进去，两条 URL 末尾拼的都是那个变量 | 分开说三件事：① `indexCode` 单发不改命中（第二节那行 13152），"页面恒发同一个值"只在这一枚上能当旁证；② `likeDoc` **会**换命中——不发是折叠过的 13152，发 `likeDoc=0` 得 16199／16919（第二节那一行），而 AJAX 那份 `dataParms` 里根本没有这一枚（只在两条 URL 串里出现），所以"结果页地址那一发"与"本层这一发"不是同一份集合。**这一跳 2026-11-27 已用源码关掉，不必开浏览器**：现读 `getSearch.js`（42,768 字节）——`likeDoc` 全文件只出现 1 处（那条高级搜索的 `window.open` 串里），`dataParms` 首次赋值的 19 枚键（column／label／orderBy／wordPlace／cwrqStart／cwrqEnd／xxgkEffectLevel／xxgkSonTaxPolicy／xxgkTaxPolicy／xxgkFormulatedYear／xxgkAging／industrytypename／searchWord／docType／docYear／docNo／searchSiteName／startTime／endTime）逐枚列出来不含它；文件里唯一那处地址栏取参是 `decodeURI(window.location.href.split('?')[1]).split('&')[1].split('=')[1]`（3 处，取的是第二个参数当 `searchWord`、只喂埋点），通用取参函数一个都没有（`location.search`／`GetQueryString`／`URLSearchParams`／`getQueryVariable` 全 0 命中）。⇒ 从结果页地址进页面，页面自己发的那份 AJAX 仍然不带 `likeDoc`，渲染的是"不发这一枚"那一份集合（当日 1910 那一档），地址里那枚 `likeDoc=0` 不进取数；另记同日读数：标签基数上发 `likeDoc=0` 是 1952、不发是 1910，所以这一枚在两种基数上都会换命中数（旧文只测过 `likeDoc=1` 那一档，曾写成"标签基数上看不出差别"）；结果页的服务端 HTML（46,078 字节）里 `likeDoc`／`total`／「共找到」／「条结果」全 0 命中、无千分位数字——总数根本不在服务端正文里，是 JS 渲染出来的，所以拿结果页 HTML 对总数这一路走不通；③ `userName` 要按登录态读，未登录才是空串 |
 | 效力等级改写 | 有一段把「行政法规」换成「法规」、「税务部门规章」换成「规章」的分支，**整块是注释掉的** | 现行页面按录入值原样发。所以 `xxgkEffectLevel=法规` 回 0 是这一轮的实测，不能写成"站点把行政法规映射成法规" |
 | 联想 | 在 `public.js` 里（不在 `getSearch.js`）另有一个 `search5/search/suggestFGK?siteCode=bm29000002&indexCode=1&typename=文件&searchWord=…` 端点，那一串同样带 `column=政策法规,政策解读,政策指引` 与那十枚 `label`；回显里读的是 `suggestFGKList` | **2026-11-26 首次实测并已接**（3.62.43 `tax_web_search.suggest_fgk`）。逐字读数六条：一是端点挂在 **www 主机**（`https://www.chinatax.gov.cn/search5/search/suggestFGK`），匿名可达、无墙；二是响应是**双层 JSON**——顶层 `json.loads` 得到的还是一个字符串，要再 parse 一次才成对象（这与 `public.js` 里那句 `JSON.parse(res)` 吻合，它自己就是二次解析）；三是条目是**带 `<span>` 高亮的标题串**（`中华人民共和国<span>增</span><span>值</span><span>税</span>法`），**没有 url、没有发文字号**，`item.replace(/<[^>]+>/g,"")` 去标签即得干净标题；四是五发（增值税／增值／留抵退税／研发费用加计扣除／小规模纳税人）全部 200、都回 6 条，体积 576–1,024B；五是**空检索词也回 6 条**（426B），不是报错；六是 `typename=新闻` 回 25B `{"suggestFGKList":[]}`——这一档只有「文件」有内容。⇒ 它是「文件类标签基数」上的标题联想，与第三节那张表同一索引族；因为交回的不是文号也不是直链，**没有接进 `search_chinatax` 主链**，只作只读联想函数（判据 `test_suggest_fgk_is_not_wired_into_the_search_chain` 钉住这一条）。 |
 
@@ -532,6 +533,10 @@ curl -s -o public.js    https://fgk.chinatax.gov.cn/zcfgk/xhtml/js/public.js
 
 # 4. 联想端点（2026-11-26 接通，只读标题清单，不进检索主链）
 python -c "import sys;sys.path.insert(0,'scripts');import tax_web_search as W;print(W.suggest_fgk('增值税'))"
+
+# 5. likeDoc 那一档（2026-11-27 补测）：同一参数发与不发各一发，比 searchResultAll.total
+#    （当日读数：标签基数不发 1910、发 likeDoc=0 得 1952；界面那份集合看第 3 步取回的
+#    getSearch.js 里 dataParms 十九枚键含不含 likeDoc——不含就是「不发」那一份）
 ```
 
 第 2 步那两枚 `--aging` 与 `--effect-level` **同发只有三档会被程序拦下**（财税文件／其他文件／

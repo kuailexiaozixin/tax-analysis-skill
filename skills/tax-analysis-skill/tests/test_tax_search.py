@@ -582,15 +582,17 @@ def test_shui5_read_article():
 
 
 def test_wechat_search():
-    """Test WeChat public-account search through Sogou."""
-    print("\n[Test] WeChat (Sogou): 研发费用加计扣除")
+    """Test WeChat public-account search through Yuanbao."""
+    print("\n[Test] WeChat (Yuanbao): 研发费用加计扣除")
+    from urllib.parse import urlsplit
     from tax_wechat import search_wechat
     result = search_wechat("研发费用加计扣除", size=3)
     assert not result.get("_error"), f"WeChat search failed: {result.get('_error')}"
     assert result["total"] > 0, "WeChat search should return articles"
     for item in result["results"]:
-        assert item.get("url", "").startswith("https://mp.weixin.qq.com/"), \
-            f"Link not restored: {item.get('url')}"
+        link = urlsplit(item.get("url", ""))
+        assert link.scheme in ("http", "https") and link.hostname == "mp.weixin.qq.com", \
+            f"Link is not a WeChat article URL: {item.get('url')}"
     print(f"  [PASS] WeChat hits: {result['total']}")
     print(f"  [PASS] First: {result['results'][0]['title'][:60]}")
     return result
@@ -608,7 +610,9 @@ def test_wechat_read_article():
     print("\n[Test] WeChat article body")
     from tax_wechat import search_wechat, read_article
     found = search_wechat("研发费用加计扣除", size=1)
-    assert found["total"] > 0, "Need at least one article to read"
+    assert found["total"] > 0, (
+        "Need at least one article to read; "
+        f"error={found.get('_error')!r}, zero_hit={found.get('_zero_hit')!r}")
     url = found["results"][0]["url"]
     content, err = read_article(url)
     if err:
@@ -1488,7 +1492,7 @@ def main():
         ("shui5.cn Search", test_shui5_search),
         ("shui5.cn Article Body", test_shui5_read_article),
         ("shui5.cn Direct Body", test_shui5_direct_body),
-        ("WeChat (Sogou) Search", test_wechat_search),
+        ("WeChat (Yuanbao) Search", test_wechat_search),
         ("WeChat Article Body", test_wechat_read_article),
         ("NPC Reliability Marker", test_npc_reliability_marker),
         ("Challenge Page Detection", test_challenge_page_detection),

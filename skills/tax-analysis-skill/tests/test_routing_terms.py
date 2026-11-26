@@ -11,6 +11,7 @@
 import argparse
 import contextlib
 import io
+import json
 import sys
 from pathlib import Path
 
@@ -381,6 +382,109 @@ _ITEM = {"title": "国家税务总局关于企业重组业务所得税处理有�
          "govDoc": {"docNum": "国家税务总局公告2026年第13号"},
          "xxgk_aging": "全文有效",
          "xxgk_effectLevel": "税务规范性文件"}
+
+
+class _SugResp:
+    """假的 suggestFGK 响应。构造入参是**已经序列化好的正文文本**——站方回的是
+    「包了一层引号的 JSON 字符串」，顶层 parse 得到 str，要二次 parse（2026-11-26
+    实测，与 public.js 里先 JSON.parse(res) 再读 suggestFGKList 的写法对得上）。"""
+
+    def __init__(self, text):
+        self.text = text
+        self.status_code = 200
+        self.content = text.encode("utf-8")
+
+    def json(self):
+        return json.loads(self.text)
+
+
+def _sug_body(titles):
+    return json.dumps(json.dumps({"suggestFGKList": titles}, ensure_ascii=False),
+                      ensure_ascii=False)
+
+
+def test_suggest_fgk_strips_highlight_and_keeps_order():
+    """联想只交回标题清单：高亮标签要剥掉、站点给的原顺序要留住。"""
+    saved = W.requests.get
+    sent = []
+
+    def fake(url, params=None, **kw):
+        sent.append((url, dict(params or {})))
+        return _SugResp(_sug_body([
+            "中华人民共和国<span>增</span><span>值</span><span>税</span>法",
+            "<span>增值税</span>暂行条例",
+            "关于明确<span>增值税</span>若干征管事项的公告"]))
+
+    try:
+        W.requests.get = fake
+        out = W.suggest_fgk("增值税")
+    finally:
+        W.requests.get = saved
+    assert out["titles"] == ["中华人民共和国增值税法", "增值税暂行条例",
+                             "关于明确增值税若干征管事项的公告"], out
+    assert out["count"] == 3, out
+    assert sent[0][0].endswith("/search5/search/suggestFGK"), sent[0][0]
+    assert sent[0][1]["searchWord"] == "增值税", sent[0][1]
+    print("  [PASS] suggestFGK 剥标签、保顺序、走 www 主机的 suggestFGK 端点")
+
+
+def test_suggest_fgk_double_encoded_payload_is_parsed():
+    """双层 JSON（顶层 parse 出来还是字符串）必须解得开；解不开要报失败而不是崩。"""
+    saved = W.requests.get
+    try:
+        W.requests.get = lambda url, params=None, **kw: _SugResp(_sug_body(["甲", "乙"]))
+        ok = W.suggest_fgk("测试")
+        assert ok["titles"] == ["甲", "乙"], ok
+        # 站点也可能直接回对象（不再套一层）：两种都要读得出。
+        W.requests.get = lambda url, params=None, **kw: _SugResp(
+            json.dumps({"suggestFGKList": ["丙"]}, ensure_ascii=False))
+        one = W.suggest_fgk("测试")
+        assert one["titles"] == ["丙"], one
+        # 彻底不是 JSON 的正文：报 _error，不许抛异常。
+        class _Junk:
+            status_code = 200
+            text = "<html>网关错误</html>"
+
+            def json(self):
+                raise ValueError("no json")
+        W.requests.get = lambda url, params=None, **kw: _Junk()
+        junk = W.suggest_fgk("测试")
+        assert junk["titles"] == [] and junk.get("_error"), junk
+        assert junk.get("_fetch_failed"), junk
+    finally:
+        W.requests.get = saved
+    print("  [PASS] suggestFGK 双层 JSON / 单层对象 / 非 JSON 三种正文都归位")
+
+
+def test_suggest_fgk_empty_list_is_not_an_error():
+    """typename 越界（比如「新闻」）站点回 {"suggestFGKList":[]}：这是「这个频道没有联想」，
+    不是取数失败——把它报成失败会让调用方误以为整条路不通。"""
+    saved = W.requests.get
+    try:
+        W.requests.get = lambda url, params=None, **kw: _SugResp(_sug_body([]))
+        out = W.suggest_fgk("增值税")
+    finally:
+        W.requests.get = saved
+    assert out["titles"] == [], out
+    assert out["count"] == 0, out
+    assert "_error" not in out and "_fetch_failed" not in out, out
+    assert out.get("_zero_hit"), out
+    print("  [PASS] suggestFGK 空清单归 _zero_hit，不是 _fetch_failed")
+
+
+def test_suggest_fgk_is_not_wired_into_the_search_chain():
+    """这一档是只读旁路：检索主链不能被它改动（联想只当标题基数用，
+    接进主链就等于让一个说不清性质的端点影响「有没有这份文件」的结论）。
+    CLI 那一支可以调它（人手动问一次联想），但 answer/search 层不许。"""
+    root = Path(__file__).resolve().parent.parent
+    src = (root / "scripts" / "tax_web_search.py").read_text(encoding="utf-8")
+    body = src[src.index("def search_chinatax("):src.index("def _clean(")]
+    assert "suggest_fgk(" not in body, "suggest_fgk 不该被 search_chinatax 调用"
+    for name in ("tax_search.py", "tax_answer.py", "tax_cases.py",
+                 "tax_aggregator.py"):
+        other = (root / "scripts" / name).read_text(encoding="utf-8")
+        assert "suggest_fgk" not in other, f"{name} 不该消费联想端点"
+    print("  [PASS] suggest_fgk 只在 tax_web_search 里，主链与答句层都没接")
 
 
 def test_search5_page_index_is_zero_based():

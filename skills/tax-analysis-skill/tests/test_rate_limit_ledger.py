@@ -69,7 +69,7 @@ def _gated_hosts():
     """代码里每把串行闸所保护的站点主机名。
 
     认"实例化 SerialGate 的那个模块"而不是认锁文件名：闸与站点是同模块绑定的
-    （`NpcSerialGate` 打在 tax_search、`sogou_gate` 打在 tax_wechat），模块顶部的
+    （`NpcSerialGate` 打在 tax_search、`yuanbao_gate` 打在 tax_wechat），模块顶部的
     站点常量就是这把闸保护的对象。tax_http 是闸的本体，跳过。
     """
     hosts = set()
@@ -155,13 +155,14 @@ class TestGatesHaveLedgerRows(unittest.TestCase):
         """值域自检：闸真在的时候这一条才有效，闸被删了要在这里报，而不是静默变绿。"""
         hosts = _gated_hosts()
         self.assertIn("flk.npc.gov.cn", hosts, "NPC 那把闸在代码里找不到了")
-        self.assertIn("weixin.sogou.com", hosts, "搜狗那把闸在代码里找不到了")
+        self.assertIn("so.qq.com", hosts, "元宝那把闸在代码里找不到了")
 
 
 class _Resp:
     """探针形态判据要的最小响应面：状态码、原始字节、文本、落地地址。"""
 
-    def __init__(self, status=200, body="", url="https://weixin.sogou.com/weixin"):
+    def __init__(self, status=200, body="",
+                 url="https://so.qq.com/isearch?tab=weixin_article&query=x"):
         self.status_code = status
         self.content = body.encode("utf-8") if isinstance(body, str) else body
         self.text = body if isinstance(body, str) else body.decode("utf-8", "replace")
@@ -170,77 +171,87 @@ class _Resp:
 
 
 class TestProbeShapeLabels(unittest.TestCase):
-    """探针的形态标签必须与生产判据同族——2026-11-25 实测逼出来的一条。
-
-    那天 `weixin.sogou.com/weixin?type=2` 回的是 **HTTP 200 / 0 字节**（四档对照
-    全同：新会话、先取首页拿 cookie、桌面 UA、补浏览器头；真浏览器同址也是空白页）。
-    旧探针只看状态码，把这发记成「200-正常页」，台账当场就会写成「未复现限流」——
-    而生产 `tax_wechat.search_wechat` 同一发报的是「既没有结果块也没有无结果提示」。
-    探针与生产读出两种性质，台账就失去了「下次按同一种形态比对」的能力。
-    3.62.33 起生产把 0 字节单列（「正文 0 字节：这一路当天没给页面」），与探针的
-    「200-空响应(0字节)」同族；本类的六条钉住探针侧，生产侧由
-    `tests/test_source_defects.py::TestWechatEmptyBodyIsItsOwnShape` 钉住。
-    """
+    """探针形态必须与元宝生产判据同族，手机搜狗仍单独判。"""
 
     @classmethod
     def setUpClass(cls):
         import importlib.util
-        if str(SCRIPTS_DIR) not in sys.path:      # 探针内部按生产形状 import
+        if str(SCRIPTS_DIR) not in sys.path:
             sys.path.insert(0, str(SCRIPTS_DIR))
         spec = importlib.util.spec_from_file_location(
             "probe_rate_limit", ROOT / "tests" / "probe_rate_limit.py")
         cls.probe = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.probe)
 
+    def test_yuanbao_request_shape_matches_production(self):
+        import tax_wechat
+        method, url, kwargs = self.probe._yuanbao_call()
+        self.assertEqual("GET", method)
+        self.assertTrue(url.startswith(
+            "https://so.qq.com/isearch?tab=weixin_article&query="))
+        self.assertIn("%E7%A0%94%E5%8F%91", url)
+        self.assertEqual(tax_wechat.HEADERS_YUANBAO, kwargs["headers"])
+        self.assertEqual(tax_wechat.TIMEOUT, kwargs["timeout"])
+        self.assertTrue(kwargs["stream"])
+
     def test_empty_page_is_not_recorded_as_a_normal_page(self):
-        label = self.probe._sogou_shape(_Resp(status=200, body=""))
-        self.assertNotEqual(label, "200-正常页",
-                            "空壳页又被记成正常页：台账会写「未复现」，"
-                            "而生产同一发报的是取数失败")
+        label = self.probe._yuanbao_shape(_Resp(status=200, body=""))
+        self.assertFalse(self.probe._is_good(self.probe.TARGETS["yuanbao"], label))
         self.assertIn("空响应", label)
 
-    def test_the_three_wechat_shapes_are_three_labels(self):
-        """结果块、无结果提示、既无块又无提示——三件事必须三种标签。"""
+    def test_result_zero_and_unknown_pages_have_distinct_labels(self):
         import tax_wechat
-        with_block = ('<div class="txt-box"><a href="/link?url=x">t</a></div>'
-                      '</div>') * 3
-        self.assertTrue(self.probe._sogou_shape(
-            _Resp(body=with_block)).startswith("200-结果块"))
-        self.assertEqual(self.probe._sogou_shape(
-            _Resp(body="抱歉，" + tax_wechat.NO_RESULT_MARK + "相关的微信公众号文章。")),
-            "200-无结果提示")
-        self.assertIn("既无结果块也无提示",
-                      self.probe._sogou_shape(_Resp(body="<html>壳页</html>")))
+        with_card = ('<a href="https://mp.weixin.qq.com/s?k=1" '
+                     'data-x="linkid&quot;:&quot;title&quot;">题名</a>') * 3
+        self.assertTrue(self.probe._yuanbao_shape(
+            _Resp(body=with_card)).startswith("200-结果卡("))
+        self.assertEqual(self.probe._yuanbao_shape(
+            _Resp(body='<div class="js-results">没有结果</div>')), "200-无结果提示")
+        self.assertIn("既无结果卡也无提示",
+                      self.probe._yuanbao_shape(_Resp(body="<html>壳页</html>")))
+
+    def test_login_and_captcha_walls_are_not_zero_hits(self):
+        self.assertEqual(self.probe._yuanbao_shape(
+            _Resp(body='<a data-x="linkid&quot;:&quot;login_page&quot;">登录</a>')),
+            "200-登录墙")
+        self.assertEqual(self.probe._yuanbao_shape(
+            _Resp(body='<script src="/static/antispider.min.js"></script>环境异常')),
+            "200-验证或拦截页")
+
+    def test_result_cards_win_over_summary_keywords(self):
+        body = ('<div class="js-results antispiderToken">'
+                '<a href="https://mp.weixin.qq.com/s?k=1" '
+                'data-x="linkid&quot;:&quot;title&quot;">题名</a>'
+                '<div class="sa-text">摘要提到验证码</div></div>')
+        self.assertTrue(self.probe._yuanbao_shape(_Resp(body=body)).startswith("200-结果卡("))
 
     def test_antispider_redirect_still_wins_over_the_body_checks(self):
         self.assertEqual(
-            self.probe._sogou_shape(_Resp(body="", url="https://weixin.sogou.com/antispider/?x")),
-            "跳转-antispider")
+            self.probe._yuanbao_shape(_Resp(
+                body="", url="https://so.qq.com/antispider/?x")), "跳转-antispider")
 
     def test_the_mobile_probe_separates_an_empty_body_too(self):
-        """手机那一路同一族病：0 字节不能算「无结果区」，得单列一格。"""
         self.assertIn("空响应",
                       self.probe._sogou_mobile_shape(_Resp(
                           body="", url="https://m.sogou.com/web/searchList.jsp")))
 
     def test_good_labels_are_predicates_not_one_fixed_string(self):
-        """两路搜狗入口的「放行」都写在标签前缀里；压成固定串就看不出量到几条。"""
-        for key in ("sogou", "sogou-mobile"):
+        for key in ("yuanbao", "sogou-mobile"):
             good = self.probe.TARGETS[key]["good"]
             self.assertTrue(callable(good),
                             f"{key} 的 good 又不是判函数了，形态会被压平")
         self.assertTrue(self.probe._is_good(
-            self.probe.TARGETS["sogou"], "200-结果块(10块)"))
+            self.probe.TARGETS["yuanbao"], "200-结果卡(10张,有效直链10)"))
         self.assertFalse(self.probe._is_good(
-            self.probe.TARGETS["sogou"], "200-空响应(0字节)"))
+            self.probe.TARGETS["yuanbao"], "200-空响应(0字节)"))
         self.assertFalse(self.probe._is_good(
             self.probe.TARGETS["sogou-mobile"], "200-有结果块无直链(raw=0)"))
 
-    def test_the_probe_covers_both_sogou_entries(self):
-        """台账那两行说过「探针未收录手机网页搜索」——收录了就得钉住，
-        否则探针退化回三枚入口，台账那句改口又变成空话。"""
+    def test_the_probe_covers_all_active_entries(self):
+        self.assertIn("yuanbao", self.probe.TARGETS)
         self.assertIn("sogou-mobile", self.probe.TARGETS)
         self.assertIn("wechat-read", self.probe.TARGETS)
+        self.assertNotIn("sogou", self.probe.TARGETS)
 
 
 if __name__ == "__main__":

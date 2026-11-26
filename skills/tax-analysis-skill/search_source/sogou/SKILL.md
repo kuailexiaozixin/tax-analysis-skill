@@ -18,7 +18,7 @@ description: 搜狗手机端网页检索（m.sogou.com）——站内 site 限�
 
 - 负责：限定站点的候选地址、标题、摘要与日期。
 - 不负责：权威性判定。搜狗只是目录，命中什么算什么的口径走 `references/evidence_grading.md`；摘要是搜索引擎生成的，不能当引文。
-- 与 `search_source/wechat` 的分工：微信公众号那一路走 `weixin.sogou.com`（另一枚入口、另一把闸），本模块走 `m.sogou.com` 网页检索。两把闸不共用，别把一侧的读数搬到另一侧。
+- 与 `search_source/wechat` 的分工：微信公众号那一路走元宝 `so.qq.com`（`tax_wechat.yuanbao_gate`），本模块走 `m.sogou.com` 网页检索（`tax_sogou._sogou_gate`）。两把闸不共用，别把一侧的读数搬到另一侧。
 
 ## 命令依赖
 

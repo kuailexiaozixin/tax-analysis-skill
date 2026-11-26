@@ -7,7 +7,7 @@
   2. 搜狗被拦时地方口径这一层、税屋这一层都是空的，
      要在答案里明说、不要拿别的源顶替
   3. fgk 翻得越深相关性越差，深页条目必须回 L1 核对
-  4. 公众号依赖会话，并发加压会触发反爬
+  4. 元宝公众号检索分结果页、登录墙与验证码墙，检索请求进独立串行闸
   5. `_reliability: medium` 说的是这条的召回方式，要落成一句具体提醒
   6. `_reliability: low` 同样只提醒核对，不折算成分数、不从挑选里剔除
 
@@ -261,10 +261,12 @@ class TestPartialRoundLoss(unittest.TestCase):
     """`_partial_error`：站点给了清单，逐枚正文/地址却没取回来。
 
     2026-11-24 探针 `.tmp-inspect/partial_loss_surfaces.py`（双臂 × 三面，控制组
-    先过才认读数）实测：三枚里两枚还原失败时，实务那一路交回 1 条而说明为空，
-    读成「网上只有 1 篇解读」；三枚全失败时读成「网上没有解读」；税屋那一路三枚
-    里两枚正文为空时交回 3 条（两条空正文）说明也为空，答案层把空正文条目照常
-    送进 evidence，读起来像「这三篇都核过了」。聚合层 errors={}、gaps=0，全是静的。
+    先过才认读数）在旧搜狗入口实测：三枚里两枚还原失败时，实务那一路交回 1 条而
+    说明为空，读成「网上只有 1 篇解读」；三枚全失败时读成「网上没有解读」。迁移后
+    的元宝入口直接给微信文章直链，下面的夹具用「两枚结果链接无效」复现同一契约。
+    税屋那一路三枚里两枚正文为空时交回 3 条（两条空正文）说明也为空，答案层把空
+    正文条目照常送进 evidence，读起来像「这三篇都核过了」。聚合层 errors={}、
+    gaps=0，全是静的。
 
     为什么不借用顶层 `_error` 说这件事：那枚的语义是「这一路整体没取到」，
     `_rows_and_error` 见到它就把条目全部作废（`tax_answer.py:296-297`），
@@ -274,34 +276,25 @@ class TestPartialRoundLoss(unittest.TestCase):
 
     TITLES = ("增值税即征即退的操作口径", "留抵退税的申报表单变化", "六税两费减免的适用主体")
 
-    def _wx_block(self, i: int) -> str:
-        return ('<div class="txt-box"><div class="fl"><a class="account" href="#">'
-                '财税小课堂%d</a></div><h3><a href="/link?url=kk%d" '
-                'target="_blank">%s</a></h3><div class="timeDate">'
-                '1767225600</div></div>\n</div>' % (i, i, self.TITLES[i - 1]))
+    def _wx_block(self, i: int, valid_link: bool = True) -> str:
+        href = ("https://mp.weixin.qq.com/s?k=%d" % i if valid_link
+                else "https://example.test/article/%d" % i)
+        return ('<a data-x="linkid&quot;:&quot;source&quot;">'
+                '<span>财税小课堂%d</span><span>http://mp.weixin.qq.com</span>'
+                '<span>%d天前</span></a>'
+                '<a href="%s" data-x="linkid&quot;:&quot;title&quot;">%s</a>'
+                '<div class="sa-text">摘要 %d</div>' %
+                (i, i, href, self.TITLES[i - 1], i))
 
-    def _wx_page(self, n: int) -> str:
-        return "<html><body>" + "".join(self._wx_block(i) for i in range(1, n + 1)) + "</body></html>"
+    def _wx_page(self, n: int, n_ok: int = 3) -> str:
+        return "<html><body>" + "".join(
+            self._wx_block(i, i <= n_ok) for i in range(1, n + 1)) + "</body></html>"
 
     def _wechat_round_trip(self, n_ok: int, read_body: bool = False, n_body: int = 3):
-        """真的走一遍 search_wechat，只把取页、还原、取正文三处换掉。
-
-        n_ok：前几枚能还原出真实地址；n_body：前几枚能取回正文。
-        read_article 的真实契约是 (正文, 错误) 二元组（`tax_wechat.py:246`），
-        桩必须同形——写成裸字符串会让被测函数在解包处炸，看着像实现有缺陷。
-        """
-        page = self._wx_page(3)
-        sent = []
+        page = self._wx_page(3, n_ok=n_ok)
 
         def fake_get(sess, url, **kw):
-            return _WxResp(page, "https://weixin.sogou.com/weixin?type=2&query=x")
-
-        def fake_restore(link, sess):
-            idx = int(link.rsplit("kk", 1)[1])
-            sent.append(idx)
-            if idx <= n_ok:
-                return "https://mp.weixin.qq.com/s?src=11&k=%d" % idx, ""
-            return "", "HTTP 500"
+            return _WxResp(page, "https://so.qq.com/isearch?tab=weixin_article&query=x")
 
         def fake_read(url):
             idx = int(url.rsplit("k=", 1)[1])
@@ -309,49 +302,46 @@ class TestPartialRoundLoss(unittest.TestCase):
                 return "正文 %d" % idx, ""
             return "", "正文容器未命中（可能已删除）"
 
-        old_get, old_restore, old_read, old_sleep = (W._sogou_get, W._restore_url,
-                                                    W.read_article, W.time.sleep)
+        old_get, old_read, old_sleep = W._yuanbao_get, W.read_article, W.time.sleep
         try:
-            W._sogou_get = fake_get
-            W._restore_url = fake_restore
+            W._yuanbao_get = fake_get
             W.read_article = fake_read
             W.time.sleep = lambda s: None
             return W.search_wechat("增值税", size=3, read_body=read_body)
         finally:
-            (W._sogou_get, W._restore_url, W.read_article,
-             W.time.sleep) = (old_get, old_restore, old_read, old_sleep)
+            W._yuanbao_get, W.read_article, W.time.sleep = old_get, old_read, old_sleep
 
-    def test_wechat_all_restored_says_nothing(self):
-        """控制组：三枚还原都成 ⇒ 不许凭空编出一条"没取全"来。"""
+    def test_wechat_all_links_valid_says_nothing(self):
+        """控制组：三枚直链都有效 ⇒ 不许凭空编出一条"没取全"来。"""
         r = self._wechat_round_trip(3)
         self.assertEqual(3, r["total"])
         self.assertNotIn("_partial_error", r, r.get("_partial_error"))
         self.assertNotIn("_error", r)
 
-    def test_wechat_partial_restore_names_the_loss(self):
+    def test_wechat_partial_link_loss_names_the_loss(self):
         r = self._wechat_round_trip(1)
         self.assertEqual(3, r["total"], "清单取到了，条数不该变")
         self.assertNotIn("_error", r, "借顶层 _error 会把已取回的那条一起作废")
         note = r["_partial_error"]
-        self.assertIn("2/3 条没还原出真实地址", note, note)
+        self.assertIn("2/3 条没有有效微信直链", note, note)
         self.assertIn("不能当成完整的一轮用", note, note)
 
-    def test_wechat_total_restore_failure_is_still_partial_not_a_zero_hit(self):
-        """三枚全没还原：站点确实给了三条，不能说成「这一路 0 条/没有内容」。"""
+    def test_wechat_total_link_failure_is_fetch_failure_not_zero_hit(self):
         r = self._wechat_round_trip(0)
-        self.assertEqual(3, r["total"])
-        self.assertIn("3/3 条没还原出真实地址", r["_partial_error"])
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertFalse(r.get("_zero_hit"))
+        self.assertIn("没有一条有效的微信文章直链", r["_error"])
 
     def test_wechat_lost_body_is_counted_apart_from_lost_link(self):
-        """还原成了、正文没取到 ⇒ 说的是"没取到正文"，不是"没有地址"。"""
         r = self._wechat_round_trip(3, read_body=True, n_body=1)
         note = r["_partial_error"]
         self.assertIn("2/3 条没取到正文", note, note)
-        self.assertNotIn("没还原出真实地址", note, "地址都还原成功了，别混说")
+        self.assertNotIn("没有有效微信直链", note, "地址都有效，别混说")
         self.assertEqual(3, r["total"])
         r2 = self._wechat_round_trip(1, read_body=True, n_body=0)
         both = r2["_partial_error"]
-        self.assertIn("2/3 条没还原出真实地址", both, both)
+        self.assertIn("2/3 条没有有效微信直链", both, both)
         self.assertIn("1/3 条没取到正文", both, both)
 
     def test_shui5_partial_body_is_headed_at_the_top(self):
@@ -459,12 +449,12 @@ class TestPartialRoundLoss(unittest.TestCase):
              "date": "2026-02-02", "content": ""}]}
         wechat = {"total": 1, "results": [
             {"title": self.TITLES[2], "url": "", "date": "2026-01-03", "_error": "HTTP 500"}],
-            "_partial_error": "站点给了 1 条，但 1/1 条没还原出真实地址"}
+            "_partial_error": "元宝给出了 1 条，但 1/1 条没有有效微信直链"}
         with mock.patch.object(REL, "search_shui5", return_value=shui5), \
              mock.patch.object(REL, "search_wechat", return_value=wechat):
             items, note = REL.search_practice_sources("增值税", n=3)
         self.assertIn("微信公众号", note, note)
-        self.assertIn("没还原出真实地址", note, note)
+        self.assertIn("没有有效微信直链", note, note)
         self.assertEqual(2, len(items), "税屋两枚照常交出（空正文那条也是真条目）")
         self.assertEqual({"税屋"}, {i["source"] for i in items},
                          "微信那枚没有地址，不该混进结果里")
@@ -484,7 +474,7 @@ class TestPartialRoundLoss(unittest.TestCase):
         ok = {"total": 1, "results": [{"title": "财税〔2025〕1号", "url": "https://x.test/a"}]}
         wechat = {"total": 3, "results": [{"title": self.TITLES[0], "url": "",
                                            "_error": "HTTP 500"}],
-                  "_partial_error": "站点给了 3 条，但 2/3 条没还原出真实地址"}
+                  "_partial_error": "元宝给出了 3 条，但 2/3 条没有有效微信直链"}
         with mock.patch.object(AGG, "search_tax", return_value=ok), \
              mock.patch.object(AGG, "search_chinatax", return_value=ok), \
              mock.patch.object(AGG, "sogou_search", return_value=ok), \
@@ -877,7 +867,7 @@ class TestFormatterShowsReliability(unittest.TestCase):
         self.assertNotIn("可靠性", self._render())
 
 
-# ── ④ 搜狗微信要进闸，不能靠"别并发"的提醒 ────────────────────────────────
+# ── ④ 元宝公众号检索要进闸，不能靠"别并发"的提醒 ───────────────────────────
 class _FakeSession:
     """记录并发峰值的假会话，用来验证闸真的把并发压成 1。"""
 
@@ -898,66 +888,72 @@ class _FakeSession:
                 self.active -= 1
 
 
-class TestWechatSogouGate(unittest.TestCase):
-    def test_sogou_requests_go_through_the_gate(self):
+class TestWechatYuanbaoGate(unittest.TestCase):
+    def test_yuanbao_requests_go_through_the_gate(self):
         src = (SCRIPTS_DIR / "tax_wechat.py").read_text(encoding="utf-8")
-        for fn in ("def search_wechat", "def _restore_url"):
-            body = src[src.index(fn):]
-            body = body[:body.index("\ndef ")]
-            self.assertIn("_sogou_get", body, "{} 没走闸".format(fn))
-            self.assertNotIn("sess.get(", body, "{} 里还有绕开闸的裸 sess.get".format(fn))
-        helper = src[src.index("def _sogou_get"):src.index("def search_wechat")]
-        self.assertIn("with sogou_gate:", helper)
+        body = src[src.index("def search_wechat"):]
+        body = body[:body.index("\ndef ")]
+        self.assertIn("_yuanbao_get", body, "search_wechat 没走闸")
+        self.assertNotIn("sess.get(", body, "search_wechat 里还有绕开闸的裸 sess.get")
+        helper = src[src.index("def _yuanbao_get"):src.index("def search_wechat")]
+        self.assertIn("with yuanbao_gate:", helper)
 
     def test_gate_is_the_shared_implementation_with_its_own_lock(self):
-        self.assertIsInstance(W.sogou_gate, tax_http.SerialGate)
+        self.assertIsInstance(W.yuanbao_gate, tax_http.SerialGate)
         self.assertIsInstance(T.npc_gate, tax_http.SerialGate)
         self.assertIsInstance(T.npc_gate, T.NpcSerialGate)
         self.assertNotEqual(
-            W.sogou_gate.path, T.npc_gate.path,
+            W.yuanbao_gate.path, T.npc_gate.path,
             "两个站必须各用一把锁，共用一把会让不相关的请求互相排队甚至死等")
 
     def test_concurrent_callers_are_serialized(self):
         sess = _FakeSession()
-        old = W._SOGOU_MIN_INTERVAL
+        old = W.YUANBAO_MIN_INTERVAL
         try:
-            W._SOGOU_MIN_INTERVAL = 0.0      # 只验证闸，不验证限速
+            W.YUANBAO_MIN_INTERVAL = 0.0
             threads = [threading.Thread(
-                target=W._sogou_get,
-                args=(sess, "https://weixin.sogou.com/weixin?type=2&query=x"))
+                target=W._yuanbao_get,
+                args=(sess, "https://so.qq.com/isearch?tab=weixin_article&query=x"))
                 for _ in range(4)]
             for t in threads:
                 t.start()
             for t in threads:
                 t.join()
         finally:
-            W._SOGOU_MIN_INTERVAL = old
+            W.YUANBAO_MIN_INTERVAL = old
         self.assertEqual(1, sess.max_active,
                          "并发峰值 %d：闸没起作用" % sess.max_active)
 
     def test_min_interval_is_enforced(self):
         sess = _FakeSession()
-        old_int, old_at = W._SOGOU_MIN_INTERVAL, W._last_sogou_at
+        old_int, old_at = W.YUANBAO_MIN_INTERVAL, W._last_yuanbao_at
         try:
-            W._SOGOU_MIN_INTERVAL = 0.4
-            W._last_sogou_at = 0.0
+            W.YUANBAO_MIN_INTERVAL = 0.4
+            W._last_yuanbao_at = 0.0
             t0 = time.monotonic()
-            W._sogou_get(sess, "https://weixin.sogou.com/weixin?type=2&query=x")
-            W._sogou_get(sess, "https://weixin.sogou.com/weixin?type=2&query=y")
+            W._yuanbao_get(sess, "https://so.qq.com/isearch?tab=weixin_article&query=x")
+            W._yuanbao_get(sess, "https://so.qq.com/isearch?tab=weixin_article&query=y")
             dt = time.monotonic() - t0
         finally:
-            W._SOGOU_MIN_INTERVAL, W._last_sogou_at = old_int, old_at
+            W.YUANBAO_MIN_INTERVAL, W._last_yuanbao_at = old_int, old_at
         self.assertGreaterEqual(dt, 0.4, "两次请求之间没有按最小间隔让路")
 
 
 class _WxResp:
-    """一枚够用的 requests.Response 替身：只带 read_article 真读的四个字段。"""
-
     def __init__(self, html, url, status=200):
         self.text = html
         self.content = html.encode("utf-8")
         self.url = url
         self.status_code = status
+        self.headers = {"Content-Type": "text/html; charset=utf-8"}
+        self.closed = False
+
+    def iter_content(self, chunk_size=65536):
+        for offset in range(0, len(self.content), chunk_size):
+            yield self.content[offset:offset + chunk_size]
+
+    def close(self):
+        self.closed = True
 
 
 class TestWechatCaptchaGate(unittest.TestCase):
@@ -1048,77 +1044,133 @@ class _WxSession:
 
 
 class TestWechatSearchZeroHit(unittest.TestCase):
-    """搜狗微信检索：真 0 命中与"页面结构变了/验证页"必须分开。
+    """元宝检索：零命中、登录墙、验证码墙与页面改版必须分开。"""
 
-    2026-11-24 实测（.tmp-inspect\\wechat_emptyshape_probe.py 现拉）：
-    0 命中页 HTTP 200、`blocks=0`，但页面带 `<div class="b404-box"
-    id="noresult_part1_container">` 与"没有找到相关的微信公众号文章。"；
-    有结果页（"研发费用加计扣除"、"增值税法 2026 实施"，blocks=10）
-    都不带这枚标记。旧实现 `if not blocks` 把两种捏成一句
-    "检索结果为空或页面结构已变"，于是**合法的零命中也被报成取数失败**
-    （聚合层 tax_aggregator.py:381 只认 _error 就记进 errors）——
-    方向与断供那条相反：这里是把"没有"说成"失败"。
-    """
-
-    ZERO_HIT_HTML = ('<html><body><div class="b404-box" id="noresult_part1_container">'
-                     '<p class="p1">呀！</p><p class="p3">没有找到相关的微信公众号文章。</p>'
-                     '</div></body></html>')
+    ZERO_HIT_HTML = ('<html><body><div class="js-results">'
+                     '<p>没有找到相关的微信公众号文章。</p></div></body></html>')
+    LOGIN_HTML = ('<html><body><a data-x="linkid&quot;:&quot;login_page&quot;">'
+                  '请登录后继续查看内容</a></body></html>')
+    CAPTCHA_HTML = ('<html><head><script src="/static/antispider.min.js"></script></head>'
+                    '<body>环境异常，请完成验证</body></html>')
     BROKEN_HTML = "<html><body> totally restructured, no blocks, no marker </body></html>"
+    RESULT_HTML = ('<html><body><div class="js-results antispiderToken">'
+                   '<a data-x="linkid&quot;:&quot;source&quot;"><span>财税小课堂</span>'
+                   '<span>2天前</span></a><a href="https://mp.weixin.qq.com/s?k=1" '
+                   'data-x="linkid&quot;:&quot;title&quot;">留抵退税问答</a>'
+                   '<div class="sa-text">摘要提到验证码，但不是拦截页</div>'
+                   '</div></body></html>')
 
-    def _search_with(self, html, url="https://weixin.sogou.com/weixin?type=2&query=x"):
-        resp = _WxResp(html, url, 200)
+    def _search_with(self, html, url="https://so.qq.com/isearch?tab=weixin_article&query=x",
+                     status=200):
+        resp = _WxResp(html, url, status)
         fake = _WxSession(resp)
-        old = W._sogou_get
+        old = W._yuanbao_get
         try:
-            W._sogou_get = lambda sess, u, **kw: fake.get(u)
+            W._yuanbao_get = lambda sess, u, **kw: fake.get(u)
             return W.search_wechat("某词", size=3)
         finally:
-            W._sogou_get = old
+            W._yuanbao_get = old
 
     def test_genuine_zero_hit_is_clean_not_a_failed_channel(self):
         r = self._search_with(self.ZERO_HIT_HTML)
         self.assertEqual(0, r["total"])
-        self.assertFalse(r.get("_error"),
-                         "0 命中不该被报成取数失败，聚合层会把它记进 errors")
-        self.assertTrue(r["results"] == [])
+        self.assertFalse(r.get("_error"))
+        self.assertEqual([], r["results"])
+        self.assertTrue(r.get("_zero_hit"))
+        self.assertFalse(r.get("_fetch_failed"))
+
+    def test_login_wall_is_a_fetch_failure_not_zero_hit(self):
+        r = self._search_with(self.LOGIN_HTML)
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertFalse(r.get("_zero_hit"))
+        self.assertIn("登录墙", r["_error"])
+
+    def test_captcha_wall_is_a_fetch_failure_not_zero_hit(self):
+        r = self._search_with(self.CAPTCHA_HTML)
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertFalse(r.get("_zero_hit"))
+        self.assertIn("验证或拦截页", r["_error"])
+
+    def test_antispider_landing_url_is_a_fetch_failure(self):
+        r = self._search_with(self.BROKEN_HTML,
+                              url="https://so.qq.com/antispider/?query=x")
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertIn("跳转到反爬或验证页", r["_error"])
 
     def test_structurally_broken_page_still_reports_error(self):
         r = self._search_with(self.BROKEN_HTML)
         self.assertEqual(0, r["total"])
-        self.assertTrue(r.get("_error"),
-                        "无结果块又无 noresult 标记的页面必须报错，不能静默当 0 条")
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertFalse(r.get("_zero_hit"))
+        self.assertIn("页面结构可能已变", r["_error"])
 
-    def test_marker_constant_is_real_and_discriminating(self):
-        """把实测前提钉住：标记常量就是站点回的那枚 id；有结果的 fixture 不含它。"""
-        self.assertEqual("noresult_part1_container", W.NO_RESULT_MARK)
-        self.assertIn(W.NO_RESULT_MARK, self.ZERO_HIT_HTML)
-        self.assertNotIn(W.NO_RESULT_MARK, self.BROKEN_HTML)
-        self.assertNotIn(W.NO_RESULT_MARK,
-                         '<div class="txt-box">…</div>',
-                         "有结果块形态里不该出现这枚标记")
+    def test_http_failure_is_not_zero_hit(self):
+        r = self._search_with(self.ZERO_HIT_HTML, status=503)
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertFalse(r.get("_zero_hit"))
+        self.assertIn("HTTP 503", r["_error"])
+
+    def test_result_page_wins_over_keywords_and_antispider_token(self):
+        r = self._search_with(self.RESULT_HTML)
+        self.assertEqual(1, r["total"])
+        self.assertFalse(r.get("_error"))
+        self.assertIn("留抵退税问答", r["results"][0]["title"])
+
+    def test_zero_result_markers_are_discriminating(self):
+        self.assertEqual(("js-results", "result-card"), W.ZERO_RESULT_MARKS)
+        self.assertTrue(any(mark in self.ZERO_HIT_HTML for mark in W.ZERO_RESULT_MARKS))
+        self.assertFalse(any(mark in self.BROKEN_HTML for mark in W.ZERO_RESULT_MARKS))
+
+    def test_only_exact_wechat_article_hosts_are_accepted(self):
+        accepted = ("https://mp.weixin.qq.com/s?src=11",
+                    "http://mp.weixin.qq.com/s?src=11")
+        rejected = ("https://mp.weixin.qq.com.evil.test/s?src=11",
+                    "https://mp.weixin.qq.com:443/s?src=11",
+                    "https://user@mp.weixin.qq.com/s?src=11",
+                    "ftp://mp.weixin.qq.com/s?src=11",
+                    "/link?url=x", "")
+        for link in accepted:
+            self.assertEqual(link, W._safe_mp_link(link))
+        for link in rejected:
+            self.assertEqual("", W._safe_mp_link(link), link)
+
+    def test_dates_and_accounts_do_not_shift_to_the_previous_card(self):
+        html = ('<a data-x="linkid&quot;:&quot;source&quot;"><span>第一账号</span>'
+                '<span>2026-11-20</span></a>'
+                '<a href="https://mp.weixin.qq.com/s?k=1" '
+                'data-x="linkid&quot;:&quot;title&quot;">第一篇</a>'
+                '<a data-x="linkid&quot;:&quot;source&quot;"><span>第二账号</span>'
+                '<span>3天前</span></a>'
+                '<a href="https://mp.weixin.qq.com/s?k=2" '
+                'data-x="linkid&quot;:&quot;title&quot;">第二篇</a>')
+        rows = W._parse_results(html)
+        self.assertEqual([("第一账号", "2026-11-20", False),
+                          ("第二账号", "3天前", True)],
+                         [(r["account"], r["date_text"], r["date_approx"]) for r in rows])
+
+    def test_all_invalid_links_are_failure_not_a_delivered_zero_hit(self):
+        r = self._search_with('<a href="https://example.test/a" '
+                              'data-x="linkid&quot;:&quot;title&quot;">题名</a>')
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertFalse(r.get("_zero_hit"))
+        self.assertIn("没有一条有效的微信文章直链", r["_error"])
 
 
 class TestWechatEmptyBodyIsItsOwnShape(unittest.TestCase):
-    """HTTP 200 / 0 字节是第三种形状，不能跟"改版"、"验证页"共用一句话。
-
-    2026-11-25 与 11-26 两轮实测（`.tmp-inspect\\probe33a.py`、`probe33b.py`）：
-    `weixin.sogou.com/weixin?type=2` 对**任何**检索词都回 200 / 0 字节 /
-    `Content-Type: text/plain`，连 2026-11-24 有结果的两枚词（"研发费用加计扣除"、
-    "增值税法 2026 实施"）与真 0 命中的那枚（"zzxqq不存在词组qmxk"）也一样；
-    真浏览器同址也是空白页。旧话术「既没有结果块也没有无结果提示：可能改版或落在
-    验证页」把三种成因压成一句，读者会照着去查改版与验证页——而这两件事当天
-    一条都不成立（改版至少回一份 HTML，验证页会跳 /antispider/ 或带验证字样）。
-    """
+    """HTTP 200 / 0 字节是空响应，不能改称零命中或页面改版。"""
 
     def _search_with(self, html):
-        resp = _WxResp(html, "https://weixin.sogou.com/weixin?type=2&query=x")
+        resp = _WxResp(html, "https://so.qq.com/isearch?tab=weixin_article&query=x")
         fake = _WxSession(resp)
-        old = W._sogou_get
+        old = W._yuanbao_get
         try:
-            W._sogou_get = lambda sess, u, **kw: fake.get(u)
+            W._yuanbao_get = lambda sess, u, **kw: fake.get(u)
             return W.search_wechat("某词", size=3)
         finally:
-            W._sogou_get = old
+            W._yuanbao_get = old
 
     def test_zero_byte_page_says_the_channel_gave_nothing(self):
         r = self._search_with("")
@@ -1144,13 +1196,13 @@ class TestWechatEmptyBodyIsItsOwnShape(unittest.TestCase):
         self.assertTrue(broken.get("_error"))
         self.assertNotEqual(empty["_error"], broken["_error"],
                             "0 字节与有内容认不出被写成同一句，读者就分不开成因")
-        self.assertIn("改版", broken["_error"],
+        self.assertIn("页面结构可能已变", broken["_error"],
                       "有内容却认不出结构那一支才该提改版")
 
-    def test_a_nonempty_marker_free_page_still_reports_the_old_way(self):
-        """补了新支不能把旧支顶掉：有正文、无块、无标记，仍走"可能改版或落在验证页"。"""
+    def test_a_nonempty_marker_free_page_still_reports_relayout(self):
+        """有正文、无结果、无登录或验证锚，仍走页面结构可能已变。"""
         r = self._search_with("<html><body>一段与检索无关的门户页</body></html>")
-        self.assertIn("既没有结果块也没有无结果提示", r["_error"])
+        self.assertIn("页面结构可能已变", r["_error"])
 
 class _NpcResp:
     """够用的 NPC 响应替身：HTTP 永远 200，业务状态只活在 JSON 里。"""
@@ -1681,7 +1733,7 @@ class TestNormativeIsABasisNotReference(unittest.TestCase):
              "technical", "practice"),
             ({"title": "六税两费减免的十个易错点", "source": "税屋 (shui5.cn)"},
              "interpretation", "practice"),
-            ({"title": "实务问答：留抵退税的口径", "source": "微信公众号 (搜狗微信)"},
+            ({"title": "实务问答：留抵退税的口径", "source": "微信公众号 (元宝搜索)"},
              "technical", "practice"),
             ({"title": "上海市税务局关于做好企业重组备案工作的通知"},
              "local_normative", "direct"),
@@ -3115,6 +3167,149 @@ class TestSogouWebSearch(unittest.TestCase):
             again = SOG.sogou_search("增值税", site="shui5.cn")
         self.assertFalse(again["_from_cache"])
         self.assertTrue(again["_blocked"], "失败结果不能靠缓存翻成成功或零结果")
+
+
+class TestSogouMobileDataIsland(unittest.TestCase):
+    """2026-11-26 量到的手机入口新形状：结果搬进 `<script type="application/json">`
+    数据岛，HTML 里只剩壳。旧解析器只看 `a.resultLink` 的 `url=` 参数，于是
+    「有结果区、零直链」被判成页面改版（`_fetch_failed`），而页面里明明躺着六条
+    可点直链。这一类钉的是：数据岛要读得出、读不出时旧三支分流不能回归、
+    岛上的日期字段有一枚是抓取日不能当发布日。
+
+    依据是当日真页 `tests/fixtures/msogou_dataisland_20261126.html`（脱敏后
+    318,013 字节；本机 IP 与会话 qid 与反爬 token 已打码），复现过程见
+    search_source/sogou/NOTE.md。
+    """
+
+    WEB = "https://www.sogou.com/web?query=x"
+    FIX = ROOT / "tests" / "fixtures" / "msogou_dataisland_20261126.html"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.page = cls.FIX.read_text(encoding="utf-8")
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        for name, value in (("_STATE_PATH", Path(tmp.name) / "state.json"),
+                            ("_cache", tax_cache.CacheManager(enabled=False)),
+                            ("SEARCH_MIN_GAP", 0)):
+            patcher = mock.patch.object(SOG, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _search(self, html, site="", size=10):
+        with mock.patch.object(SOG, "_fetch",
+                               return_value=(html, self.WEB, "", False)):
+            return SOG.sogou_search("研发费用加计扣除", site=site, size=size)
+
+    def test_the_real_page_has_islands_and_no_clickable_html_anchor(self):
+        """前置事实：这页里 `a.resultLink` 只有百科卡那一枚可用直链。"""
+        self.assertGreaterEqual(self.page.count('type="application/json"'), 6)
+        rows, raw, area = SOG._parse_mobile(self.page, "", 100)
+        self.assertTrue(area)
+        self.assertEqual(0, raw)
+
+    def test_islands_are_parsed_into_rows(self):
+        rows, raw, area = SOG._parse(self.page, "", 100)
+        self.assertTrue(area)
+        self.assertEqual(6, raw)
+        self.assertEqual(6, len(rows))
+        hosts = sorted(r["source"] for r in rows)
+        self.assertIn("chinatax.gov.cn", hosts)
+        self.assertIn("gov.cn", hosts)
+        self.assertTrue(all(r["url"].startswith("http") for r in rows))
+
+    def test_island_titles_and_snippets_have_highlight_tags_stripped(self):
+        rows, _, _ = SOG._parse(self.page, "", 100)
+        for r in rows:
+            with self.subTest(title=r["title"][:24]):
+                self.assertNotIn("<em>", r["title"])
+                self.assertNotIn("<span>", r["title"])
+                self.assertNotIn("<em>", r["snippet"])
+        hit = [r for r in rows if "研发费用加计扣除" in r["title"]]
+        self.assertTrue(hit, "高亮剥掉后检索词要还在标题里")
+
+    def test_a_sogou_self_link_or_a_domainless_url_is_not_a_result(self):
+        """岛层那两道筛（自家域、无域名）也得有用例盯着。
+
+        2026-11-26 注入证伪时发现：把 `_island_rows` 里「非 sogou 域才收」那一行
+        整条撤掉，这一类用例全绿——说明当时只钉了「读得到六枚」，没钉「读不出
+        百科卡与配置块」。站点自家链接（百科卡、翻页 URL）与没有域名的对象
+        （相对路径、空串）都不算结果。
+        """
+        island = ('<script type="application/json">'
+                  + json.dumps({"url": "https://baike.sogou.com/v175633099.htm",
+                                "title": "研发费用加计扣除 - 搜狗百科"})
+                  + '</script>'
+                  + '<script type="application/json">'
+                  + json.dumps({"url": "/web/searchList.jsp?keyword=x",
+                                "title": "没有域名的相对路径"})
+                  + '</script>'
+                  + '<script type="application/json">'
+                  + json.dumps({"url": "", "title": "空址"})
+                  + '</script>')
+        rows, raw = SOG._island_rows(island, "")
+        self.assertEqual(raw, 0, "自家域与无域名的一枚都不该计数：%r" % raw)
+        self.assertEqual(rows, [], "自家域与无域名的一枚都不该交回：%r" % rows)
+
+    def test_island_time_is_not_used_as_a_publish_date(self):
+        """岛上的 `showSiteAndDate.time` 不能当发布日印出去：本轮这页里两枚卡片
+        （税费知识库、海南那份 2023 年的 PDF 指引）标的是抓取当天，另外几枚标的是
+        站点收录/更新时间。宁可留空，也不把一个说不清的日期印进答案。
+        """
+        self.assertIn('"time":"2026-11-26"', self.page)
+        rows, _, _ = SOG._parse(self.page, "", 100)
+        self.assertTrue(rows)
+        for r in rows:
+            with self.subTest(host=r["source"]):
+                self.assertEqual("", r["date"])
+
+    def test_site_filter_applies_to_island_rows(self):
+        rows = self._search(self.page, site="chinatax.gov.cn")["results"]
+        self.assertTrue(rows)
+        for r in rows:
+            with self.subTest(url=r["url"]):
+                self.assertTrue(r["source"].endswith("chinatax.gov.cn"))
+        self.assertNotIn("gov.cn", [r["source"] for r in rows])
+
+    def test_sogou_search_returns_rows_instead_of_a_structure_error(self):
+        out = self._search(self.page)
+        self.assertNotIn("_error", out)
+        self.assertNotIn("_fetch_failed", out)
+        self.assertEqual(6, out["total"])
+
+    def test_a_json_payload_outside_an_island_tag_is_not_a_result(self):
+        """纪律：只在 `type="application/json"` 的容器里读，脚本正文提一句不算。"""
+        jsonq = '{"url":"https://www.shui5.cn/a","title":"串里"}'
+        html = ('<div class=vrResult><h3>没有找到直链</h3></div>'
+                '<script>var hint = ' + jsonq + ';</script>')
+        rows, raw, area = SOG._parse(html, "", 10)
+        self.assertEqual([], rows)
+        self.assertEqual(0, raw)
+
+    def test_malformed_island_json_falls_back_to_the_old_outcome(self):
+        """JSON 畸形不许抛异常；抛了就把「改版」升级成崩溃。"""
+        html = ('<div class=vrResult><h3>结果区</h3></div>'
+                '<script type="application/json">{"url":"https://x.test/a",</script>')
+        rows, raw, area = SOG._parse(html, "", 10)
+        self.assertEqual([], rows)
+        self.assertEqual(0, raw)
+        self.assertTrue(area)
+
+    def test_a_real_zero_page_still_reads_as_a_real_zero(self):
+        """旧分流不许回归：site-vr-none 仍是 `_zero_hit`，不是失败。"""
+        html = ('<div class=results><div class="vrResult site-vr-none">'
+                '<p class=site-text>抱歉，未找到“shui5.cn”站内包含“增值税”的内容</p>'
+                '</div></div>')
+        out = self._search(html, site="shui5.cn")
+        self.assertNotIn("_error", out)
+        self.assertTrue(out.get("_zero_hit"))
+
+    def test_a_page_with_neither_area_nor_hint_still_says_verify_page(self):
+        out = self._search("<html><body>空</body></html>")
+        self.assertIn("验证页", out["_error"])
+        self.assertTrue(out.get("_fetch_failed"))
 
 
 class TestShui5ChannelRouting(unittest.TestCase):
@@ -5667,7 +5862,7 @@ class TestUnifiedExitMarkerContract(unittest.TestCase):
     """
 
     RESULT_URL = SH.SEARCH_RESULT + "?page=0&searchid=12345"
-    WX_ZERO_HTML = ('<html><body><div class="b404-box" id="noresult_part1_container">'
+    WX_ZERO_HTML = ('<html><body><div class="js-results">'
                     '<p class="p3">没有找到相关的微信公众号文章。</p></div></body></html>')
     WX_BROKEN_HTML = "<html><body> totally restructured, no blocks, no marker </body></html>"
 
@@ -5724,13 +5919,14 @@ class TestUnifiedExitMarkerContract(unittest.TestCase):
             return WS.search_chinatax(keyword, size=10)
 
     def _wechat(self, html, keyword="契约词"):
-        fake = _WxSession(_WxResp(html, "https://weixin.sogou.com/weixin?type=2&query=x", 200))
-        old = W._sogou_get
+        fake = _WxSession(_WxResp(
+            html, "https://so.qq.com/isearch?tab=weixin_article&query=x", 200))
+        old = W._yuanbao_get
         try:
-            W._sogou_get = lambda sess, u, **kw: fake.get(u)
+            W._yuanbao_get = lambda sess, u, **kw: fake.get(u)
             return W.search_wechat(keyword, size=3)
         finally:
-            W._sogou_get = old
+            W._yuanbao_get = old
 
     def _sogou(self, html, err="", blocked=False, keyword="契约词"):
         with mock.patch.object(SOG, "_cache", tax_cache.CacheManager(enabled=False)), \

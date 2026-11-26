@@ -6,6 +6,7 @@
 
 - 入口：`https://m.sogou.com/web/searchList.jsp?keyword=<词>`（`tax_sogou.SEARCH_URL`），手机端 UA（Android 13 + Chrome 131 Mobile）+ `Referer: https://m.sogou.com/`。
 - 结果块认 `<div class="vrwrap">`；标题在 `<h3 class="vr-title">`，直链在 `data-url="https://…"`，摘要在 `class="fz-mid space-txt"`，来源站在 `class="citeLinkClass"`，日期按正文里的 `YYYY-MM-DD`。
+- **上面那把 HTML 锚在 2026-11-26 的页面上已经不够用了**：这一天量到的形状是结果卡片整体搬进 `<script type="application/json">` 数据岛，HTML 侧只剩壳——`data-url` 0 处，`class` 含 `resultLink` 的 `<a>` 只剩百科卡一枚（目标 `baike.sogou.com`，被自家域判据正确拒掉）。3.62.43 起 `_parse` 在「按 HTML 读到 0 枚直链」之后回落 `_island_rows`，从岛上的顶层 `url`+`title` 取结果；岛上的 `showSiteAndDate.time` **不当发布日用**（同一页里两枚卡片标的是抓取当天），所以岛层那几枚的 date 一律留空——宁可少给一个字段，不把猜测印进答案。
 - 续页形状是地址里的 `$N` 段（正则 `\$\d+(?=\.html)`），不是查询参数。
 - 重定向码单独列出 `(301,302,303,307,308)`：`_is_antispider_location` 只在重定向族里看 `Location`，其它状态码一律不按反爬判。
 
@@ -30,9 +31,13 @@
 
 ## 四、复测入口
 
-- 联网阈值：`python tests/probe_rate_limit.py --target sogou-mobile`（3.62.31 起手机这一路已收录；`--target sogou` 是微信入口那一枚，同在探针里）。
+- 联网阈值：`python tests/probe_rate_limit.py --target sogou-mobile`（手机当前入口）。微信公众号检索另用 `--target yuanbao`，正文阈值用 `--target wechat-read`；旧 `--target sogou` 只对应已停用的搜狗微信入口，不是现行复测入口。**3.62.43 把该探针注释里那句「生产把失败分成三层（`sogou_search` L487-505）」的行号校正为真身位置**（原行号已随文件增长失真）。
+- 数据岛这一刀的回放入口：`python -m pytest tests/test_source_defects.py -k SogouMobileDataIsland -q`（离线读 `tests/fixtures/msogou_dataisland_20261126.html`，零请求）。
 - **2026-11-25 首次实测的形状**：连发 6 + 2 线程×2 共 10 发，`200-有结果块无直链(raw=0)`×9、`ConnectionError`×1——阈值没触发，量到的是改版形态（52–56 万字节 React 页，老的 `vrwrap` 与 `data-url` 两把锚零命中；页面里那 8 枚 `application/json` 结果岛不跟 `site:` 走，是「相关推荐」不是命中清单）。生产报 `_fetch_failed`「页面结构可能改版」是对的，这一路的判据没有坏。
 - **2026-11-26 再复量（离线回放当天存的三页，零请求）**：页型又换了——三页 178,778 / 156,364 / 283,176 字节（11-25 那批是 52–56 万），`vrwrap`、`data-url` 两把老锚仍全零命中；三页 `div.vrResult` 各 1 / 1 / 11 枚，`class` 含 `resultLink` 的 `<a>` 各 0 / 0 / **1** 枚（唯一那枚是「研发费用加计扣除 - 搜狗百科」，目标 `baike.sogou.com` 被 `_matches_site(target,"sogou.com")` 正确拒掉）；`site:` 两页里那些 `./id=<uuid>/…/tc?…` 相对跳转址（13 与 31 枚）逐个解 `url=`/`pcurl=` 后 **44/44 全指 sogou 自家**（提示词跳板 `s_from=uphintTag`），不带 site 那页外站直链只剩 8 枚去重（chinatax／gov.cn／cnfin 一类），全在 React 推荐岛、**不跟 `site:` 走**，无一枚 shui5。⇒ 改版是持续状态不是单日抖动；当天两档 `site:` 页里 `shui5.cn` 字样（48 与 84 处）全在 `window.oldQuery` 回显与 keyword 段，不在结果里。判据分流见第二节末尾那三条。
 - 同一天真浏览器（带自己的 cookie）打开同址被 302 到 `/captcha/?m=1&antip=wap_hd` 图形验证码页——requests 那路拿到壳页、浏览器那路被跳验证页，两件事都记在台账那一行里，读的时候别只挑一件。
+- **2026-11-26 同日第三轮（这一轮把「改版」那档翻案了）**：另存的一页 320,043 字节（脱敏后进 `tests/fixtures/msogou_dataisland_20261126.html`，318,013 字节）里有 **9 块 `<script type="application/json">` 数据岛**，其中**六块是结果卡片**——顶层对象带 `url`+`title`（另有 `content` 摘要、`showSiteAndDate`），六枚直链落在 chinatax.gov.cn（含带 `:8443` 端口那枚）、www.gov.cn、liaoning/hainan/hunan.chinatax 上，全是真命中。⇒ 上一段那句「改版」判得没错（HTML 锚确实取不出直链），但**结论不该停在「取不出」**：站点把结果换了容器，不是没给结果。这一页离线喂旧解析器读数 `rows=0 raw=0 has_results=True`、完整信封 `_error='搜狗返回了结果区，但没有解析出可用直链：页面结构可能改版'` + `_fetch_failed=True`。
+- 3.62.43 的修复与边界：新增 `_ISLAND_JSON_RE`（只认带 `type="application/json"` 的容器，裸 `<script>` 里出现 url/title 字样不算）与 `_island_rows()`，挂在 `_parse` 的手机支后面——**HTML 读到 0 枚直链才回落岛层，岛层也读不出仍报「结构可能改版」**（「有结果区但一条直链都取不出」这个语义保留，不加成静默 0 条）。岛层只认顶层 `url`+`title` 这一对键，所以配置块、只有标题的新闻聚合、带翻页 URL 的导航块自动筛掉。**注意别拿 script 的 `id` 当锚**：那是 `data-<会话 uuid>`，每轮都换。固化用例见 `tests/test_source_defects.py::TestSogouMobileDataIsland`（十枚）。
+- 外部诊断报告（`搜狗通道故障诊断汇报_2026-11-26.md`）里关于 **weixin.sogou.com 那一路持续 200/0 字节**的三条主张，本轮独立复现通过：微信主机活着（首页 200/66,627B `text/html`），而 `/weixin?type=2&query=…` 回 200/0B、`text/plain`、`Server: stgw`、`Content-Length: 0`、正文 sha256 `e3b0c44298fc1c14…`（空正文的哈希）。**该入口现已停用，公众号检索已迁移到元宝**；这里只保留历史故障读数，不构成现行操作指引。`m.sogou.com` 手机网页通道仍活跃，其反爬、预算、熔断、数据岛与两档无结果判据照旧适用。
 - 台账两行分开读：桌面历史入口（`www.sogou.com/web?query=`）2026-10-23 有当次读数——1 线程连发 6 词全落 `200-反爬页`（5422–5458 字节、`blocks=0 rows=0`）；手机当前入口 2026-11-25 起有实测行（日期格 ISO），但**首次实测没有量到阈值**。桌面读数不得移作手机证据，保护配置也不是站点放行承诺。
 - 判闸的存废按 `references/source_defects.md` 那张限流台账的日期与三字段，不按这一段的转述。

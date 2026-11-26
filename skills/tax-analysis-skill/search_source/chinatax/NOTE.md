@@ -510,7 +510,7 @@ flk 那一路相反——`pageSize` 照请求给行：同一枚「环境保护�
 | 行业 | `industrytypename` 拼在查询串最后一位，取「行业分类」下拉框 | 行业维的键名以这一行为准，`xxgkIndustryType` 是分面那一侧的名字 |
 | 固定项 | `public.js` 拼的结果页地址里恒带 `&likeDoc=0&wordPlace=0&indexCode=1`，`getSearch.js` 那条高级搜索串里也带 `&orderBy=5&likeDoc=0&indexCode=1`；`participleRule` 与 `type` 都取 `data-id`；`userName` **不是常量**——文件里是 `var userName= ""` 打底，随后由 `/service/jzxx/isLogin.do` 的回显把 `result.userid` 覆写进去，两条 URL 末尾拼的都是那个变量 | 分开说三件事：① `indexCode` 单发不改命中（第二节那行 13152），"页面恒发同一个值"只在这一枚上能当旁证；② `likeDoc` **会**换命中——不发是折叠过的 13152，发 `likeDoc=0` 得 16199／16919（第二节那一行），而 AJAX 那份 `dataParms` 里根本没有这一枚（只在两条 URL 串里出现），所以"结果页地址那一发"与"本层这一发"不是同一份集合。这条只登记到"这一枚会换命中、且页面与本层的默认不同"为止，界面实际渲染出的是哪一份本机没对过；③ `userName` 要按登录态读，未登录才是空串 |
 | 效力等级改写 | 有一段把「行政法规」换成「法规」、「税务部门规章」换成「规章」的分支，**整块是注释掉的** | 现行页面按录入值原样发。所以 `xxgkEffectLevel=法规` 回 0 是这一轮的实测，不能写成"站点把行政法规映射成法规" |
-| 联想 | 在 `public.js` 里（不在 `getSearch.js`）另有一个 `search5/search/suggestFGK?siteCode=bm29000002&indexCode=1&typename=文件&searchWord=…` 端点，那一串同样带 `column=政策法规,政策解读,政策指引` 与那十枚 `label`；回显里读的是 `suggestFGKList` | 本层没接；要"边打字边补全"那一路时从 `public.js` 那一处进，在 `getSearch.js` 里找不到它 |
+| 联想 | 在 `public.js` 里（不在 `getSearch.js`）另有一个 `search5/search/suggestFGK?siteCode=bm29000002&indexCode=1&typename=文件&searchWord=…` 端点，那一串同样带 `column=政策法规,政策解读,政策指引` 与那十枚 `label`；回显里读的是 `suggestFGKList` | **2026-11-26 首次实测并已接**（3.62.43 `tax_web_search.suggest_fgk`）。逐字读数六条：一是端点挂在 **www 主机**（`https://www.chinatax.gov.cn/search5/search/suggestFGK`），匿名可达、无墙；二是响应是**双层 JSON**——顶层 `json.loads` 得到的还是一个字符串，要再 parse 一次才成对象（这与 `public.js` 里那句 `JSON.parse(res)` 吻合，它自己就是二次解析）；三是条目是**带 `<span>` 高亮的标题串**（`中华人民共和国<span>增</span><span>值</span><span>税</span>法`），**没有 url、没有发文字号**，`item.replace(/<[^>]+>/g,"")` 去标签即得干净标题；四是五发（增值税／增值／留抵退税／研发费用加计扣除／小规模纳税人）全部 200、都回 6 条，体积 576–1,024B；五是**空检索词也回 6 条**（426B），不是报错；六是 `typename=新闻` 回 25B `{"suggestFGKList":[]}`——这一档只有「文件」有内容。⇒ 它是「文件类标签基数」上的标题联想，与第三节那张表同一索引族；因为交回的不是文号也不是直链，**没有接进 `search_chinatax` 主链**，只作只读联想函数（判据 `test_suggest_fgk_is_not_wired_into_the_search_chain` 钉住这一条）。 |
 
 ## 五、复测入口
 
@@ -529,6 +529,9 @@ python scripts/tax_web_search.py "增值税" --size 20                        # 
 # 3. 站点那两份脚本重取（第四节逐行读数的依据就是这两份）
 curl -s -o getSearch.js https://fgk.chinatax.gov.cn/zcfgk/xhtml/js/getSearch.js
 curl -s -o public.js    https://fgk.chinatax.gov.cn/zcfgk/xhtml/js/public.js
+
+# 4. 联想端点（2026-11-26 接通，只读标题清单，不进检索主链）
+python -c "import sys;sys.path.insert(0,'scripts');import tax_web_search as W;print(W.suggest_fgk('增值税'))"
 ```
 
 第 2 步那两枚 `--aging` 与 `--effect-level` **同发只有三档会被程序拦下**（财税文件／其他文件／

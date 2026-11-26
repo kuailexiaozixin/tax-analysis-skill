@@ -83,7 +83,8 @@ python scripts/tax_search.py "<关键词>" --status 1 --size 20
   NPC 与总局由接口自己收窄，搜狗／税屋／微信公众号只在部分条目带日期，是在**本轮取回的条目窗口内**
   按条目自带日期补筛，命令行会为每个补筛源打一行「取回／区间内／区间外剔除／无日期保留」计数，
   JSON 里对应 `_date_filter.local_window`；窗口外该源仍可能有区间内的文件，补筛到 0 条不能读成
-  "该源在这个区间里没有内容"。
+  "该源在这个区间里没有内容"。元宝公众号的日期可能是相对时间，条目以 `date_approx=True` 标记，
+只能当近似线索，不能当精确发布时间；跨源比日期或据此下结论前要回正文或官方页面核对。
 - `--scope fulltext`（NPC 正文检索）可用它定位相关法规：程序给接口加了 `sort=score` 降序
   （接口每条都带 `score` 字段却不用），再按"检索词整段出现在标题"本地重排。但它本质是全文分词
   匹配，短词仍会被通用字带偏，一律带 `_reliability: medium`。**确定某条规则的准确归属只能用
@@ -346,11 +347,23 @@ JSON 接口 `GET /xy/Search.do`，无 WAF、不校验 UA、不需要凭据，也
 标题不带"解读"二字的行也落不进 `interpretation`。**读成：这一路的地址只作定位与线索，
 依据链里的 url 要回官方库那份文件**。
 
-微信公众号走搜狗，只用 `type=2` 检索文章；还原跳转链接必须与检索共用同一会话
-（依赖检索时拿到的 `SNUID`/`SUID` cookie），否则会被判成爬虫并跳到
-`/antispider/`。搜狗跳转页不是 302，而是把真实地址拆成 `url += '...'` 的 JS
-片段，拼接后还要去掉其中的 `@`。单次最多取 5 篇，还原请求间隔 1.2 秒，
-不要并发加压。**这是搜狗的反爬设计，不是缺陷，只能靠遵守节奏规避。**
+微信公众号（顶层来源名“微信公众号 (元宝搜索)”）走元宝
+`GET https://so.qq.com/isearch?tab=weixin_article&query=<URL编码词>`。返回服务端渲染 HTML，
+结果直接含 `mp.weixin.qq.com/s` 文章直链，不再经过搜狗 `/link` 还原。直链只允许
+http/https、主机精确等于 `mp.weixin.qq.com`、无端口、无用户信息；`read_article()` 仍读
+`mp.weixin.qq.com` 正文。
+
+元宝无翻页，`size` 只截当页。页面先解析有效结果，再区分登录墙、验证码/拦截、合法零命中、
+空响应、HTTP 失败、结构改版与全部无效链接；`antispiderToken` 本身不算拦截，只认
+`/antispider/`、`antispider.min.js`、`anti.min.css` 等结构锚。只有明确空结果页打
+`_zero_hit`，其余失败打 `_fetch_failed`，两键互斥。检索每次新 Session，无 API Key、
+无硬编码 Cookie、不读取浏览器登录态；超时 25 秒、响应上限 4MB，403/429/5xx 不重试。
+保护走 `tax_wechat.yuanbao_gate`（`tax_http.SerialGate`，锁 `tax-engine-yuanbao.lock`，
+`TAX_YUANBAO_LOCK_TIMEOUT` 默认 180 秒）与 `YUANBAO_MIN_INTERVAL=1.5` 秒。
+
+复测检索用 `python tests/probe_rate_limit.py --target yuanbao`；正文阈值用
+`python tests/probe_rate_limit.py --target wechat-read`，它先由元宝取得有效直链。
+搜狗手机网页仍用 `python tests/probe_rate_limit.py --target sogou-mobile`。
 
 **取到正文不等于它是依据**：税屋与公众号是第三方实务解读，角色是"执行口径与实务认定"
 （`practice`），照常进答案并参与论证，但不能顶替被它解读的那份文件当依据；引它的口径
@@ -557,6 +570,7 @@ NPC 验到 16 路并发、三趟共 104 次请求，下面那三种形态一个�
 | 税屋正文取不到 | 每条结果带 `_error` | 确认 `--check` 是否探到浏览器；仍失败改用公众号。**先分清是没凭据还是站点上没这篇**：没凭据时任何地址都回同一份挑战页，判据与凭据寿命见 `search_source/shui5/SKILL.md` |
 | 搜狗反爬／冷却／预算耗尽 | `_error` 非空；反爬或熔断另带 `_blocked=True`，预算耗尽不带该标记 | 冷却立即报错、不发请求；不立即重跑、改词、切代理或轮换端点绕过。保留失败原因，税屋可显式走 `--channel native` |
 | 搜狗网络失败／结构改版 | 网络异常与 5xx 才有限重试；有结果区却无可用直链、或既无结果区也无无结果提示，均带 `_error` | 按原因稍后复查，不当真 0 条；只有无错误的空结果才是本轮未命中，不代表站内没有相关内容 |
+| 元宝公众号页型或直链无效 | 登录墙、验证码/拦截、空响应、HTTP 失败、结构改版、全部无效链接；合法零命中页另算 | 先解析结果再判拦截；只有明确空结果页为 `_zero_hit`，其余为 `_fetch_failed`，两键互斥。`antispiderToken` 不是拦截；严格直链白名单，403/429/5xx 不重试 |
 | 总局清单为空却报告了命中数 | `_empty_reason` 分两种成因：写"已翻过末页"就是翻页参数越界，按已取回的清单下结论即可；写"该页在末页之内却没给条目清单"就是这一轮没取到清单，换检索词再取一轮才有结论 | 两种都不等于"库里没有这份文件"，答案里不得据空清单说无此规定 |
 | 中国税网返回"没走成" | `_status` 以「没走成」开头的是**请求被拦在发出之前**：栏目名不在 `data/ctax_columns.json`、或与表里多行重名（`column_lookup` 的 `ambiguous`/`missing`，会把候选一并列出）、或空词没带栏目、或日期不是 `yyyy-mm-dd`、或 `match` 不在 `MATCH_POSITIONS` 的四枚里、或 `channel` 不在 0/1/2 里、或不收满时 `size` 不是正整数、或 `max_rows` 为负、或 `--list` 的 `--pages` 非正。绕过命令行直接给 `_search_once` 传越界值时，站点那一路回 500，`_status` 末尾带 HTTP 码与字节数并写明"不是限流" | 换限定条件重发，别把它当成"站内没有"；站内确实没命中时 `_status` 写的是「0 条：这一词（连同本轮限定）在站内没有命中」，两句不是一回事 |
 | 中国税网取到的条数明显比预期少 | `_status` 写「取到 N 条，这一词共 M 条；已到页数上限」就是没翻到底（`SEARCH_MAX_PAGES` × `SEARCH_PAGE_SIZE`），写「已到 max_rows=N 行的上限」就是先撞到 `--max-rows` 那枚行数预算，写「合并同一篇挂多栏的行 K 行」则是一篇稿挂了几栏出几行被并成一条 | 第一种加 `--all`（要控制花费就配 `--max-rows`），第二种是 `--max-rows` 给的预算用完了、想多要就加大它或去掉，第三种是正常合并、不是丢数据；三种都不读成"这一词只有这些" |

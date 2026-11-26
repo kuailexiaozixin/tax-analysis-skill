@@ -18,24 +18,24 @@
      读法、R&D-Expenses 的三条能力线）；要自数到第五项就改用 `1.` 的阿拉伯
      数字列表。
   3. **路径指针存在**：文档里 `references/…`、`scripts/…`、`tests/…`、`frontend/…`、
-     `search_source/…`、`subskills/…`、`eval/…` 那 213 处指针（2026-11-26 本轮实测口径，上一轮 3.62.41 扫到 208）
+     `search_source/…`、`subskills/…`、`eval/…` 那 214 处指针（2026-11-26 本轮实测口径，上一轮 3.62.42 扫到 213）
      见下面"计数"），先按子技能
      目录解、再按仓库根解。R&D-Expenses 有自己的 `references/`，母技能那一份
      在仓库根，两套都算落地；写成 `scripts/tax_browser.BrowserSession` 那种带符号名
      后缀的形态，去掉尾段再试；带 `*` 的按 glob 至少命中一个。
-  4. **「第X步／第X节」指针落地**：98 处（2026-11-26 本轮实测，步 21／节 77）逐个解到真实标记。这个仓库里
+  4. **「第X步／第X节」指针落地**：100 处（2026-11-26 本轮实测，步 21／节 79）逐个解到真实标记。这个仓库里
      两套编号各有唯一形态——步只在 `SKILL.md` 里以 `**第X步 …**` 定义，节只在
      `NOTE.md` 与 `references/*.md` 里以 `## 一、…` 或 `## 第X节` 定义。指针的目标
      先取紧邻前 40 字里最后一个 `.md` 文件名（`NOTE.md`／`SKILL.md` 裸名指向同目录
      那份，前面写着母技能／主技能则指向仓库根 `SKILL.md`），取不到就在本文与同目录
      另一份里找。标题行与 `**第X步` 定义本身不算指针。
-  5. **代码符号可核对**：文档里 114 处 `` `tax_模块.符号` `` 反引号引用，import 得到
+  5. **代码符号可核对**：文档里 117 处 `` `tax_模块.符号` `` 反引号引用，import 得到
      该模块且模块有该属性。子技能说"值域常量在 `tax_web_search.FILE_LABELS`"而那个
      名字已漂走，读者按图索骥会扑空，而这句话在文档里读起来完全正常。
 
-计数口径（2026-11-26 本轮重扫；上一轮 3.62.41 扫到语料 29 份、路径 208／符号 110／编号 97）：语料 = `search_source/*/*.md` + `subskills/*/*.md` 共 29 份
+计数口径（2026-11-26 本轮重扫；上一轮 3.62.42 扫到语料 29 份、路径 213／符号 114／编号 98）：语料 = `search_source/*/*.md` + `subskills/*/*.md` 共 29 份
 （15 个目录：13 个搜索源目录各 2 份、R&D-Expenses 只 1 份 SKILL.md、tax-preference 2 份）；
-路径指针 213 处（本轮 208→213 差 5 处）、符号引用 114 处（本轮 110→114 差 4 处）、编号指针 98 处（本轮 97→98 差 1 处，步仍 21、节 76→77）；差值都来自 3.62.42 court 两站复量与微信那一路的第二轮取证：`rmfyalk/NOTE.md` 新增 `tests/test_source_defects.py` 一枚与 `tax_http.court_business_error` 一枚，`wenshu/NOTE.md` 新增指向 `search_source/rmfyalk/NOTE.md` 一枚与「第四节」自指一枚，`wechat/NOTE.md` 新增 `scripts/tax_browser.py`、`search_source/wenshu`、`search_source/rmfyalk` 三枚（`scripts/yuanbao_search.py` 那枚因守卫只解本仓库路径而改写成不带路径的写法），并新增 `tax_wechat.py` 两枚与 `tax_sogou.py` 一枚符号（逐枚比对旧版现算，排除标题行与步定义行后）。
+路径指针 214 处（本轮 213→214 净差 1 处）、符号引用 117 处（本轮 114→117 净差 3 处）、编号指针 100 处（本轮 98→100 差 2 处，步仍 21、节 77→79）。本轮语料里同时落了两刀，逐枚比对 HEAD 与盘上现算（排除标题行与步定义行）分开归因：3.62.43 这一刀给 `sogou/NOTE.md` 新增 `tests/test_source_defects.py` 两枚与 `tests/fixtures/msogou_dataisland_20261126.html` 两枚路径，给 `chinatax/NOTE.md` 新增 `tax_web_search.suggest_fgk` 一枚符号（第四节「联想」那行整段重写，节指针随之 22→23）；另一刀（微信那一路改走元宝入口）重写 `wechat/NOTE.md`（路径 −5、符号 −3：`scripts/tax_browser.py` 等六枚随旧段落一起去掉，新增 `search_source/sogou/` 一枚与 `tax_wechat.yuanbao_gate` 一枚）、`wechat/SKILL.md`（路径 +2、符号 +3、节 +1），并给 `sogou/SKILL.md` 新增 `tax_wechat.yuanbao_gate`、`tax_sogou._sogou_gate` 两枚符号。净数是两刀相加的结果，不是某一刀的功劳。
 这三枚数在本文件里各有一条用例下限盯着，检查规则一旦漏抓（正则被改窄、语料被改空）
 就会报红，而不是安静地少查。
 

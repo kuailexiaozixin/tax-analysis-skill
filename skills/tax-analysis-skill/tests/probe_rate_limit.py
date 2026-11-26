@@ -15,9 +15,11 @@
     python tests/probe_rate_limit.py --target npc --burst 15 --threads 8 --per-thread 2
     python tests/probe_rate_limit.py --target fgk-list --dry-run   # 只看要发的请求，一个不发
     python tests/probe_rate_limit.py --target sogou-mobile --burst 6 --threads 2 --per-thread 2
+    python tests/probe_rate_limit.py --target yuanbao --dry-run
 
-3.62.31 起多收两枚入口，因为台账上挂着「未量」的正是这两条：手机网页检索
-（`sogou-mobile`）与公众号正文读取（`wechat-read`）。手机那枚的量法有个坑必须写死：
+元宝公众号检索（`yuanbao`）、搜狗手机网页检索（`sogou-mobile`）与公众号正文读取
+（`wechat-read`）分别量。
+手机那枚的量法有个坑必须写死：
 生产 `_get` 是 `allow_redirects=False`，反爬信号在 302 的 Location 里；探针若跟随
 重定向，302 就变成 200，那道墙当场看不见了——量出来的「不限流」是假的。所以
 `sogou-mobile` 的形状判据直接调生产的 `tax_sogou._is_antispider_location` 与
@@ -114,10 +116,11 @@ def _fgk_call():
     return capture_request(lambda: tax_gov_list.make_fetch_page() (1))
 
 
-def _sogou_call():
+def _yuanbao_call():
     import tax_wechat
-    return ("GET", f"{tax_wechat.SOGOU_SEARCH}?type=2&query={quote('研发费用加计扣除')}",
-            {"headers": tax_wechat.HEADERS_SOGOU, "timeout": 15, "verify": False})
+    url = f"{tax_wechat.YUANBAO_SEARCH}?tab=weixin_article&query={quote('研发费用加计扣除', safe='')}"
+    return ("GET", url, {"headers": dict(tax_wechat.HEADERS_YUANBAO),
+                         "timeout": tax_wechat.TIMEOUT, "verify": False, "stream": True})
 
 
 def _sogou_mobile_call():
@@ -136,22 +139,21 @@ def _sogou_mobile_call():
 
 
 def _wechat_read_call():
-    """公众号正文读取：先真检索若干枚带签名的直链，再照 `read_article` 发那一发。
+    """公众号正文读取：先经元宝取到有效直链，再照 `read_article` 逐枚发那一发。
 
-    正文 URL 必须由检索现场给出——`/s?src=11&...` 那串签名是一次性的，手写死的
-    形状会拿到"链接过期"而不是"被限流"，把两种失败混成一种。返回的是**一串**入口
-    （每枚 URL 一发），`run` 轮转使用；同一枚反复取到的多半是过期，那不是这一路要量的。
-    检索这一发本身不计入形态计数，只在报告前单独说明，免得读的人把检索段的反爬当成正文段的。
+    返回的是**一串**入口（每枚 URL 一发），`run` 轮转使用；每枚只发一次，正文
+    取数失败与元宝检索失败分开记。前置检索不计入形态计数，只在报告前单独说明，
+    免得读的人把检索段的反爬当成正文段的。
     """
     import tax_wechat
     out = tax_wechat.search_wechat("增值税", size=5)
     urls = [i.get("url") for i in out.get("results", []) if i.get("url")]
     if not urls:
         raise SystemExit(
-            "检索没给出任何可还原的正文地址，正文这一路无从量起。"
+            "元宝检索没给出任何有效的微信正文直链，正文这一路无从量起。"
             f"顶层说明：{out.get('_error') or out.get('_partial_error') or '（无）'}；"
             "这本身就是台账要记的一条：入口不通，正文阈值就取不到。")
-    print(f"前置检索：取到 {len(urls)} 枚正文地址（每枚只发一次），"
+    print(f"前置元宝检索：取到 {len(urls)} 枚有效微信正文直链（每枚只发一次），"
           "正文判据与生产一致（落地 URL 里找 appmsgcaptcha）。")
     return [("GET", u, {"headers": dict(tax_wechat.HEADERS_WX),
                         "timeout": tax_wechat.TIMEOUT, "verify": False}) for u in urls]
@@ -180,35 +182,41 @@ def _npc_shape(r):
     return _json_shape(r)
 
 
-def _sogou_shape(r):
-    """微信检索入口：判据分三层，照生产 `search_wechat`（L126-141）的形状。
-
-    旧版只看状态码与 antispider，把 200 空壳页记成「200-正常页」。
-    2026-11-25 实测这一路回的是 **HTTP 200 / 0 字节**（探针四档对照：
-    新会话、带首页 cookie、桌面 UA、补浏览器头——全是空响应，真浏览器
-    同址也是空白页），旧判据会把这条写进台账成「未复现」。空响应、
-    结果块、无结果提示是三件事，必须分得开。
-    """
+def _yuanbao_shape(r):
+    """元宝公众号检索：复用生产解析、登录墙、拦截页与零结果判据。"""
     import tax_wechat
-    if "/antispider/" in (r.url or ""):
+    landed = r.url or ""
+    if ("/antispider/" in landed or "antip=web_hd" in landed
+            or "antip=wap_hd" in landed):
         return "跳转-antispider"
     if r.status_code != 200:
         return f"HTTP {r.status_code}"
     if not r.content:
         return "200-空响应(0字节)"
-    blocks = len(tax_wechat._ITEM_RE.findall(r.text))
-    if blocks:
-        return f"200-结果块({blocks}块)"
-    if tax_wechat.NO_RESULT_MARK in r.text:
+    rows = tax_wechat._parse_results(r.text)
+    if rows:
+        valid = sum(1 for row in rows if row.get("url"))
+        if valid:
+            return f"200-结果卡({len(rows)}张,有效直链{valid})"
+        return f"200-结果卡无有效直链({len(rows)}张)"
+    if any(anchor in r.text for anchor in tax_wechat.LOGIN_WALL_ANCHORS):
+        return "200-登录墙"
+    blocked = tax_wechat._blocked_reason(r.text)
+    if blocked:
+        return "200-验证或拦截页"
+    if any(marker in r.text for marker in tax_wechat.ZERO_RESULT_MARKS):
         return "200-无结果提示"
-    return f"200-既无结果块也无提示({len(r.content)}字节)"
+    return f"200-既无结果卡也无提示({len(r.content)}字节)"
 
 
 def _sogou_mobile_shape(r):
     """手机网页：判据逐字用生产的两把，探针不另立。
 
-    生产把失败分成三层（`sogou_search` L487-505）：302 跳反爬、200 验证页、
-    200 有结果区但取不到直链。三层在阈值上是三件事，合成一层就看不出是哪一种先出现。
+    生产把失败分成三层（`sogou_search` 里 `site-vr-none`／`_NO_RESULT_MARK`／
+    「raw==0 且有结果区」那三支，3.62.43 起岛层读不出才落到最后一支）：
+    302 跳反爬、200 验证页、200 有结果区但取不到直链。三层在阈值上是三件事，
+    合成一层就看不出是哪一种先出现。这里不写行号——本文件与生产都在长，
+    写死一次就过期（旧句那句「L487-505」到 3.62.43 已失真四十余行）。
     """
     import tax_sogou
     if tax_sogou._is_antispider_location(r):
@@ -216,9 +224,8 @@ def _sogou_mobile_shape(r):
     if r.status_code != 200:
         return f"HTTP {r.status_code}"
     if not r.content:
-        # 空响应与"页面里没有结果区"是两件事：前者站点根本没给东西（微信检索
-        # 这一路 2026-11-25 实测就是这个形状），后者给了页面但解析不出。
-        # 混成一格，台账就看不出这一发到底回没回东西。
+        # 空响应与"页面里没有结果区"是两件事：前者站点根本没给东西，后者给了
+        # 页面但解析不出。混成一格，台账就看不出这一发到底回没回东西。
         return "200-空响应(0字节)"
     if tax_sogou._looks_like_verify_page(r.text):
         return "200-验证页"
@@ -261,13 +268,12 @@ TARGETS = {
         "shape": _json_shape,
         "good": "200-JSON",
     },
-    "sogou": {
-        "record": "搜狗并发加压触发反爬",
-        "endpoint": "GET https://weixin.sogou.com/weixin",
-        "build_call": _sogou_call,
-        "shape": _sogou_shape,
-        # 「正常」也不是固定串：结果块数写在标签里（2026-11-25 起三层判据）。
-        "good": lambda label: label.startswith("200-结果块"),
+    "yuanbao": {
+        "record": "元宝公众号检索的限流阈值尚未量过",
+        "endpoint": "GET https://so.qq.com/isearch?tab=weixin_article&query=",
+        "build_call": _yuanbao_call,
+        "shape": _yuanbao_shape,
+        "good": lambda label: label.startswith("200-结果卡("),
     },
     "sogou-mobile": {
         "record": "手机网页检索曾观察过验证页，但阈值从未量过（3.62.31 首次实测）",
@@ -287,7 +293,7 @@ TARGETS = {
         # dry-run 不构造入口：构造就得真发一次检索（签名地址只能现场取），
         # 那就违背了「一个请求都不发」这句承诺。改为打印一份形状说明。
         "dry_run_safe": False,
-        "dry_shape": ("GET", "https://mp.weixin.qq.com/s?<检索现场还原的签名地址>",
+        "dry_shape": ("GET", "https://mp.weixin.qq.com/s?<元宝检索现场给出的签名地址>",
                       {"headers": "tax_wechat.HEADERS_WX（手机版 UA + Referer）",
                        "timeout": 20, "verify": False}),
     },

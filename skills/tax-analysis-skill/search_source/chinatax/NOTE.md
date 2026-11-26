@@ -353,6 +353,44 @@ None，手工复测把 None 记成"站点没回分面"就是这么来的。它�
 要按专题取：单词发（「碳排放权」那 1 条就是该词在这一站的全部命中）；
 要两个概念同时成立，用 `--precise` 再读正文，别用默认拼串。
 
+### 端点按 UA 字面量给 403 还是 200（2026-11-27 三组低频单发）
+
+`GET /search5/search/s` 这一发能不能通，跟参数无关，跟请求头里 `User-Agent`
+那一串长什么样有关。同参数（`siteCode=bm29000002`、`searchWord=研发费用加计扣除`、
+`type=1`、`pageSize=10`、`pageNum=0`、`orderBy=5`）逐枚换头，读数是：
+
+| 请求头组合 | HTTP | content-type | 字节 | `searchResultAll.total` |
+|---|---|---|---|---|
+| 不带任何头 | **403** | text/html | 1830 | — |
+| 只带 `Accept` | **403** | text/html | 1804 | — |
+| 只带 `Accept-Language` | **403** | text/html | 1830 | — |
+| 只带 `Accept-Encoding` | **403** | text/html | 1830 | — |
+| `User-Agent` = `python-requests/2.x` 默认串 | **403** | text/html | 1830 | — |
+| `User-Agent` 含 `HeadlessChrome` 字面量 | **403** | text/html | **6688** | — |
+| `User-Agent` = 空串 | 200 | application/json | 62631 | 2968 |
+| `User-Agent` = 正常 Chrome（含全套 sec-ch/sec-fetch） | 200 | application/json | 62631 | 2968 |
+| `User-Agent` = 正常 Edge | 200 | application/json | 62631 | 2968 |
+| 本层 `HEADERS` 原样 | 200 | application/json | 62632 | 2968 |
+| 本层 `HEADERS` 去掉 `Referer` | 200 | application/json | 62632 | 2968 |
+
+三条读法：
+
+1. **挡的是 UA，不是 Referer，也不是参数。** `Referer` 有无完全不参与（生产 `HEADERS`
+   去掉它照样 200）；只要给一个 `User-Agent`——哪怕是空串——就通。所以这一发不是
+   「要求站内来源」那一类契约（对比 `sina` 那种不带 Referer 直接 403 的接口），
+   而是「拉黑已知自动化字面量 + 完全无 UA」。
+2. **两类 UA 会被挡：脚本默认串（`python-requests/…`）和无头浏览器的 `HeadlessChrome`
+   字面量。** 后者值得单记：拿无头浏览器直接打开这一发，会读到一份 403 的 text/html
+   （6,688 字节），它长得像「端点挂了」或「路径/鉴权错」，实际只是指纹被认出来了。
+   换成 `--headed` 或把 UA 里那个字面量改掉，同一地址就是 200 的真 JSON。
+   **所以用浏览器验这一发的可达性，结论不可信——要判端点通不通，用本层 `HEADERS` 发。**
+3. **403 那份 HTML 是 CDN 生成的，不是站点正文。** 响应头带 `Server: nginx`、
+   `x-via: …Cdn Cache Server…`、`Ws-Action: com`、`Access-Control-Allow-Origin: *`，
+   标题就是 `403 Forbidden`，没有业务结构可解析。
+
+本层 `tax_web_search.HEADERS` 用的是一枚正常 Chrome 串，正好落在「通」那一侧；
+**别把它换成 `python-requests` 默认串或无头浏览器 UA**——那会稳定拿到 403。
+
 ## 三、search5 的值域、两族日期与行业键名单发读数（2026-10-20 取样）
 
 取样口径：`GET https://www.chinatax.gov.cn/search5/search/s`，除注明外每发都按本仓库
@@ -515,7 +553,7 @@ flk 那一路相反——`pageSize` 照请求给行：同一枚「环境保护�
 
 ## 五、复测入口
 
-这一层没有固定探针脚本，复测按逐枚重发走。下面三步都只发 HTTP，**零模型调用**。
+这一层没有固定探针脚本，复测按逐枚重发走。下面六步都只发 HTTP，**零模型调用**。
 
 ```bash
 # 1. 值域常量与命令行回显（零请求）
@@ -537,6 +575,10 @@ python -c "import sys;sys.path.insert(0,'scripts');import tax_web_search as W;pr
 # 5. likeDoc 那一档（2026-11-27 补测）：同一参数发与不发各一发，比 searchResultAll.total
 #    （当日读数：标签基数不发 1910、发 likeDoc=0 得 1952；界面那份集合看第 3 步取回的
 #    getSearch.js 里 dataParms 十九枚键含不含 likeDoc——不含就是「不发」那一份）
+
+# 6. UA 那一档（2026-11-27 补测）：同一 URL 只换 User-Agent 各发一发，看 403 与 200 翻转
+#    （当日读数：requests 默认串与含 HeadlessChrome 字面量两形 403、空串与正常浏览器串 200；
+#    Referer 加不加不参与，所以别拿无头浏览器验这一发的可达性）
 ```
 
 第 2 步那两枚 `--aging` 与 `--effect-level` **同发只有三档会被程序拦下**（财税文件／其他文件／

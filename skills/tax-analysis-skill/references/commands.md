@@ -360,7 +360,7 @@ JSON 接口 `GET /xy/Search.do`，无 WAF、不校验 UA、不需要凭据，也
 `x-original-uri: /iweixin?tab=weixin_article&query=<URL编码词>`，两枚缺一不可。
 三档阶梯，上一档没货自动降下一档并在 `_caveat` 写明：垂直档 → 综合档（`sp={}`，
 直链在 `h5Url`、账号在 `author`）→ `GET /isearch` 兜底（SSR 骨架页，低频时才直接出结果）。
-`--time-filter 1m` 只认 `1d`/`1w`/`1m`/`1y`，越界在发请求之前拒；垂直档与综合档都会带上。
+`--time-filter 1m` 只认 `1d`/`1w`/`1m`/`1y`，越界在发请求之前拒；垂直档与综合档都会带上，但**站点侧 `sp.timeFilter` 实测在垂直档不执行**（带与不带回同一批卡、同一顺序），筛选由本模块按发布日期本地完成，滤了多少写进 `_caveat`；相关条目全被窗清空时报零命中并带成因，既不报通道故障也不报「站内没这个词」。
 直链只允许 http/https、主机精确等于 `mp.weixin.qq.com`、无端口、无用户信息；
 `read_article()` 只读微信正文，跟跳只连同主机（`http://`→`https://` 升级会跟，出站不跟）。
 

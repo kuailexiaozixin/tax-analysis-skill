@@ -1179,6 +1179,11 @@ def _vm_plain(title, link=ARTICLE_URL, author="山东税务", publish_time="2026
                             "sourceType": "wechat", "cardInfo": {"classId": "30010608"}}}}
 
 
+def _days_ago_ts(days):
+    """相对今天的 epoch 秒——时间窗判据不能钉死绝对日期，否则隔一日本身就红。"""
+    return int(time.time()) - days * 86400
+
+
 def _cards_payload(cards, search_ms=744, has_more=False):
     """把若干张卡包成一份取数响应；search_ms 是"上游检索真跑了"的那枚读数。"""
     return json.dumps({"ok": True, "cards": cards, "hasMore": has_more, "uuid": "u-2",
@@ -1521,6 +1526,77 @@ class TestWechatLadderShapes(unittest.TestCase):
             self.assertEqual("1m", sp.get("timeFilter"), entry["kwargs"]["data"][:120])
         plain = json.loads(posts[-1]["kwargs"]["data"].decode("utf-8"))["sp"]
         self.assertNotIn("tab", plain, "最后一发是综合档，不该带垂直档的 tab")
+
+    def test_the_vertical_tier_is_filtered_locally_by_the_window(self):
+        """报告 §5.6 定性：垂直档不执行 `sp.timeFilter`，本地必须按发布日筛。
+
+        yb76tf/yb78tf3 真网各两发对照：同一词带 `timeFilter:"1m"` 与不带，回的是
+        同一批卡、同一顺序（25 张／28 张逐枚相同，复跑一致）。参数照发、站点照忽略，
+        所以这一档交付前由我们筛——并且要说清是本地筛的，不能让读者以为是站点筛的。
+        """
+        body = _cards_payload([_vm_vertical("研发费用加计扣除的新政", pub_time=_days_ago_ts(1)),
+                               _vm_vertical("研发费用加计扣除的旧口径", pub_time=_days_ago_ts(200))])
+        r = _wx_run(vertical=body, keyword=self.KEYWORD, size=3, time_filter="1m")
+        self.assertEqual(1, r["total"], r.get("_error"))
+        self.assertEqual("研发费用加计扣除的新政", r["results"][0]["title"])
+        self.assertIn("垂直档不执行站点时间筛", r["_caveat"], r["_caveat"])
+        self.assertIn("本地筛近 30 天：2 张里留 1 张", r["_caveat"], r["_caveat"])
+
+    def test_a_window_that_clears_every_item_is_a_zero_hit_not_a_failure(self):
+        """站内有货、只是都不在窗内：这是零命中（带成因），不能报成通道坏了。
+
+        这一支绝不能落进「整批推词兜底」那一路，否则时间窗把「站内没这个词」这件
+        真没发生的事伪造出来；也不能落进失败信封，否则读者以为站点连不上。
+        """
+        body = _cards_payload([_vm_vertical("研发费用加计扣除的旧口径一",
+                                            pub_time=_days_ago_ts(200)),
+                               _vm_vertical("研发费用加计扣除的旧口径二",
+                                            pub_time=_days_ago_ts(300))])
+        r = _wx_run(vertical=body, keyword=self.KEYWORD, size=3, time_filter="1m")
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_zero_hit"), r)
+        self.assertFalse(r.get("_fetch_failed"), "窗内清空是筛选的正常结局，不是取数失败")
+        self.assertIn("都不在所选时间窗内", r["_caveat"], r["_caveat"])
+
+    def test_an_item_without_a_readable_date_is_counted_not_delivered(self):
+        """日期读不出来的条目宁可少给，但那个数必须告诉读者。"""
+        body = _cards_payload([_vm_vertical("研发费用加计扣除的新政", pub_time=_days_ago_ts(2)),
+                               _vm_vertical("研发费用加计扣除的无日期", publish_time="",
+                                            pub_time="not-a-number")])
+        r = _wx_run(vertical=body, keyword=self.KEYWORD, size=3, time_filter="1m")
+        self.assertEqual(1, r["total"], r.get("_error"))
+        self.assertIn("读不出发布日期未计入", r["_caveat"], r["_caveat"])
+
+    def test_the_window_note_stays_out_when_nothing_was_dropped(self):
+        """全批都在窗内时不记账——「2 张里留 2 张」这种话是给读者的噪声。"""
+        body = _cards_payload([_vm_vertical("研发费用加计扣除的新政", pub_time=_days_ago_ts(2))])
+        r = _wx_run(vertical=body, keyword=self.KEYWORD, size=3, time_filter="1m")
+        self.assertEqual(1, r["total"], r.get("_error"))
+        self.assertNotIn("本地筛", r.get("_caveat", ""), r.get("_caveat"))
+
+    def test_the_plain_tier_is_window_filtered_too(self):
+        """综合档站点自己会筛（probe58tf 那组），但 yb77tf2 那轮没复现——不能当保证，
+        交付前同样再过一遍；这一档不能断言「站点不执行」，只能说本地复核了窗口。"""
+        plain = _cards_payload([_vm_plain("研发费用加计扣除的旧闻",
+                                          publish_time="2025-09-01 10:00:00",
+                                          link="http://mp.weixin.qq.com/s?__biz=MzA&idx=9")])
+        r = _wx_run(plain=plain, keyword=self.KEYWORD, size=3, time_filter="1y")
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_zero_hit"), r)
+        self.assertFalse(r.get("_fetch_failed"))
+        self.assertIn("综合档", r["_caveat"], r["_caveat"])
+        self.assertIn("时间窗", r["_caveat"], r["_caveat"])
+
+    def test_the_window_filter_falls_back_to_the_date_string(self):
+        """`pub_time` 给不成整数时（站点换成串或给了 0），窗口按日期串判，不能整批判空。"""
+        body = _cards_payload([_vm_vertical("研发费用加计扣除的新政",
+                                            publish_time=time.strftime(
+                                                "%Y-%m-%d 09:00:00",
+                                                time.localtime(time.time() - 86400)),
+                                            pub_time="1795654800")])
+        r = _wx_run(vertical=body, keyword=self.KEYWORD, size=3, time_filter="1m")
+        self.assertEqual(1, r["total"], r.get("_error"))
+        self.assertNotIn("未计入", r.get("_caveat", ""), r.get("_caveat"))
 
     def test_vertical_tier_sends_the_original_uri_header(self):
         """档位由 `sp.tab` 与 `x-original-uri` 两枚一起决定，缺一回 0 张卡（实测）。"""

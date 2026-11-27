@@ -7,7 +7,8 @@
   2. 搜狗被拦时地方口径这一层、税屋这一层都是空的，
      要在答案里明说、不要拿别的源顶替
   3. fgk 翻得越深相关性越差，深页条目必须回 L1 核对
-  4. 元宝公众号检索分结果页、登录墙与验证码墙，检索请求进独立串行闸
+  4. 元宝公众号检索主路是 POST 取数接口，页型分结果、限流（429_outer 那枚文案）、
+     熔断短接与验证码墙，三档阶梯共用一把串行闸和一份盘上频次账
   5. `_reliability: medium` 说的是这条的召回方式，要落成一句具体提醒
   6. `_reliability: low` 同样只提醒核对，不折算成分数、不从挑选里剔除
 
@@ -274,7 +275,10 @@ class TestPartialRoundLoss(unittest.TestCase):
     `test_both_shapes_coexist` 钉的是两条 gap 各说各的，不是合并成一条。
     """
 
-    TITLES = ("增值税即征即退的操作口径", "留抵退税的申报表单变化", "六税两费减免的适用主体")
+    # 三枚标题都冠上检索词「增值税」：主路加了相关性过滤之后，标题不含分词的条目会被
+    # 当成站点推词兜底滤掉——这一族钉的是「清单/正文丢失」，不能被过滤改意（2026-11-27）。
+    TITLES = ("增值税即征即退的操作口径", "增值税留抵退税的申报表单变化",
+              "增值税六税两费减免的适用主体")
 
     def _wx_block(self, i: int, valid_link: bool = True) -> str:
         href = ("https://mp.weixin.qq.com/s?k=%d" % i if valid_link
@@ -294,7 +298,12 @@ class TestPartialRoundLoss(unittest.TestCase):
         page = self._wx_page(3, n_ok=n_ok)
 
         def fake_get(sess, url, **kw):
-            return _WxResp(page, "https://so.qq.com/isearch?tab=weixin_article&query=x")
+            return _WxResp(page, ISEARCH_URL)
+
+        def fake_post(sess, url, **kw):
+            """主路那两发回熔断形：这一族钉的是 GET 页型的清单/正文丢失，
+            不给 POST 桩就会真的打出网络去（2026-11-27 报告 §7 的"不 hermetic"）。"""
+            return _WxResp(_dead_shape(), NEXT_PAGE_URL)
 
         def fake_read(url):
             idx = int(url.rsplit("k=", 1)[1])
@@ -302,14 +311,16 @@ class TestPartialRoundLoss(unittest.TestCase):
                 return "正文 %d" % idx, ""
             return "", "正文容器未命中（可能已删除）"
 
-        old_get, old_read, old_sleep = W._yuanbao_get, W.read_article, W.time.sleep
+        old = (W._yuanbao_get, W._yuanbao_post, W.read_article, W.time.sleep, W.DEAD_COOLDOWN)
         try:
-            W._yuanbao_get = fake_get
+            W._yuanbao_get, W._yuanbao_post = fake_get, fake_post
             W.read_article = fake_read
             W.time.sleep = lambda s: None
+            W.DEAD_COOLDOWN = 0.0
             return W.search_wechat("增值税", size=3, read_body=read_body)
         finally:
-            W._yuanbao_get, W.read_article, W.time.sleep = old_get, old_read, old_sleep
+            (W._yuanbao_get, W._yuanbao_post, W.read_article, W.time.sleep,
+             W.DEAD_COOLDOWN) = old
 
     def test_wechat_all_links_valid_says_nothing(self):
         """控制组：三枚直链都有效 ⇒ 不许凭空编出一条"没取全"来。"""
@@ -319,11 +330,18 @@ class TestPartialRoundLoss(unittest.TestCase):
         self.assertNotIn("_error", r)
 
     def test_wechat_partial_link_loss_names_the_loss(self):
+        """无链的条目不交付（交付它等于给下游一个空 link），但丢失必须点名。
+
+        2026-11-27 改口：旧写法把 3 条全交回去、只在顶层带一句"2/3 条没有有效微信直链"，
+        于是 `total` 里含着两条取不到正文的死条目。现在 `total` 就是能用的条数，
+        差额写在 `_partial_error` 里——两个数都在，读者不用猜。
+        """
         r = self._wechat_round_trip(1)
-        self.assertEqual(3, r["total"], "清单取到了，条数不该变")
+        self.assertEqual(1, r["total"], "只有那一条有直链，就该交付那一条")
         self.assertNotIn("_error", r, "借顶层 _error 会把已取回的那条一起作废")
         note = r["_partial_error"]
-        self.assertIn("2/3 条没有有效微信直链", note, note)
+        self.assertIn("元宝给出 3 条，交付 1 条", note, note)
+        self.assertIn("2 条没有有效微信直链、已剔除", note, note)
         self.assertIn("不能当成完整的一轮用", note, note)
 
     def test_wechat_total_link_failure_is_fetch_failure_not_zero_hit(self):
@@ -341,8 +359,9 @@ class TestPartialRoundLoss(unittest.TestCase):
         self.assertEqual(3, r["total"])
         r2 = self._wechat_round_trip(1, read_body=True, n_body=0)
         both = r2["_partial_error"]
-        self.assertIn("2/3 条没有有效微信直链", both, both)
-        self.assertIn("1/3 条没取到正文", both, both)
+        self.assertIn("2 条没有有效微信直链、已剔除", both, both)
+        self.assertIn("1/1 条没取到正文", both, both)
+        self.assertEqual(1, r2["total"])
 
     def test_shui5_partial_body_is_headed_at_the_top(self):
         """税屋：三篇里一篇正文没取到，顶层必须带出 `_partial_error`。"""
@@ -869,14 +888,18 @@ class TestFormatterShowsReliability(unittest.TestCase):
 
 # ── ④ 元宝公众号检索要进闸，不能靠"别并发"的提醒 ───────────────────────────
 class _FakeSession:
-    """记录并发峰值的假会话，用来验证闸真的把并发压成 1。"""
+    """记录并发峰值的假会话，用来验证闸真的把并发压成 1。
+
+    3.62.49 起主路是 POST，两枚都得有——只留 get，测出来的"并发峰值 1"就只覆盖了
+    兜底那一发，取数那两发根本没进闸也没人知道。
+    """
 
     def __init__(self):
         self.active = 0
         self.max_active = 0
         self._lock = threading.Lock()
 
-    def get(self, url, **kwargs):
+    def _one(self, url, **kwargs):
         with self._lock:
             self.active += 1
             self.max_active = max(self.max_active, self.active)
@@ -887,16 +910,33 @@ class _FakeSession:
             with self._lock:
                 self.active -= 1
 
+    def get(self, url, **kwargs):
+        return self._one(url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self._one(url, **kwargs)
+
 
 class TestWechatYuanbaoGate(unittest.TestCase):
     def test_yuanbao_requests_go_through_the_gate(self):
+        """闸的判据按函数面写，不按 `search_wechat` 里出现哪个帮手名写。
+
+        2026-11-27 主路换成 POST 之后，旧那句 `assertIn("_yuanbao_get", body)` 只是
+        被字符串换了个落点就红掉，什么也没证明。现在钉的是真正的不变量：全文件只有
+        `_yuanbao_get`/`_yuanbao_post` 两枚帮手能碰 session 方法，且两枚都在闸里。
+        """
         src = (SCRIPTS_DIR / "tax_wechat.py").read_text(encoding="utf-8")
-        body = src[src.index("def search_wechat"):]
-        body = body[:body.index("\ndef ")]
-        self.assertIn("_yuanbao_get", body, "search_wechat 没走闸")
-        self.assertNotIn("sess.get(", body, "search_wechat 里还有绕开闸的裸 sess.get")
-        helper = src[src.index("def _yuanbao_get"):src.index("def search_wechat")]
-        self.assertIn("with yuanbao_gate:", helper)
+        self.assertEqual(2, len(re.findall(r"sess\.(?:get|post)\(", src)),
+                         "只许两枚闸内帮手调用 session 的 get/post")
+        for name in ("def _yuanbao_get", "def _yuanbao_post"):
+            start = src.index(name)
+            helper = src[start:src.index("\ndef ", start)]
+            self.assertIn("with yuanbao_gate:", helper, name + " 没进闸")
+            self.assertIn("_pace_reserve()", helper, name + " 没在闸内留频次账")
+        # 握手那一发也是真请求：旧写法裸 sess.get 绕闸（报告 §5.8）
+        start = src.index("def _approve_handshake")
+        helper = src[start:src.index("\ndef ", start)]
+        self.assertIn("_yuanbao_get(sess", helper, "approve 握手绕开串行闸")
 
     def test_gate_is_the_shared_implementation_with_its_own_lock(self):
         self.assertIsInstance(W.yuanbao_gate, tax_http.SerialGate)
@@ -924,10 +964,33 @@ class TestWechatYuanbaoGate(unittest.TestCase):
         self.assertEqual(1, sess.max_active,
                          "并发峰值 %d：闸没起作用" % sess.max_active)
 
+    def test_get_and_post_share_one_gate(self):
+        """两档共用一把闸：GET 与 POST 混着并发，峰值仍是 1（分开记账＝绕过自己定的冷却）。"""
+        sess = _FakeSession()
+        old_int, old_pace, old_at = W.YUANBAO_MIN_INTERVAL, W._PACE_PATH, W._last_yuanbao_at
+        try:
+            W.YUANBAO_MIN_INTERVAL = 0.0
+            W._PACE_PATH = Path(tempfile.mkdtemp()) / "pace.json"
+            W._last_yuanbao_at = 0.0
+            threads = []
+            for index in range(4):
+                fn = W._yuanbao_get if index % 2 else W._yuanbao_post
+                threads.append(threading.Thread(target=fn, args=(sess, "https://so.qq.com/x")))
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        finally:
+            W.YUANBAO_MIN_INTERVAL, W._PACE_PATH, W._last_yuanbao_at = old_int, old_pace, old_at
+        self.assertEqual(1, sess.max_active, "混发并发峰值 %d：两档没共用一把闸" % sess.max_active)
+
     def test_min_interval_is_enforced(self):
         sess = _FakeSession()
         old_int, old_at = W.YUANBAO_MIN_INTERVAL, W._last_yuanbao_at
+        old_pace = W._PACE_PATH
         try:
+            # 盘上那枚时刻必须从空文件起算，否则上一枚用例留下的戳会把这一发拖住
+            W._PACE_PATH = Path(tempfile.mkdtemp()) / "pace.json"
             W.YUANBAO_MIN_INTERVAL = 0.4
             W._last_yuanbao_at = 0.0
             t0 = time.monotonic()
@@ -935,8 +998,45 @@ class TestWechatYuanbaoGate(unittest.TestCase):
             W._yuanbao_get(sess, "https://so.qq.com/isearch?tab=weixin_article&query=y")
             dt = time.monotonic() - t0
         finally:
-            W.YUANBAO_MIN_INTERVAL, W._last_yuanbao_at = old_int, old_at
+            W.YUANBAO_MIN_INTERVAL, W._last_yuanbao_at, W._PACE_PATH = old_int, old_at, old_pace
         self.assertGreaterEqual(dt, 0.4, "两次请求之间没有按最小间隔让路")
+
+    def test_the_interval_is_held_inside_the_gate(self):
+        """报告 §5.9：sleep 必须在闸**里面**。旧写法在闸外各算各的 gap，两进程
+        configured=1.0 秒、实测间隔 0.0019 秒就一起发出去了。
+
+        另一进程留下的时刻只能从盘上看（`_PACE_PATH`）——这一发把盘上戳写成
+        "刚刚"，本进程内存里是 0.0，只有闸内读盘才会等。
+        """
+        events = []
+
+        class _Gate:
+            def __enter__(self):
+                events.append("enter")
+                return self
+
+            def __exit__(self, *exc):
+                events.append("exit")
+                return False
+
+        sess = _FakeSession()
+        old = (W.yuanbao_gate, W.YUANBAO_MIN_INTERVAL, W._PACE_PATH, W._last_yuanbao_at,
+               W.time.sleep)
+        try:
+            W.yuanbao_gate = _Gate()
+            W.YUANBAO_MIN_INTERVAL = 5.0
+            W._PACE_PATH = Path(tempfile.mkdtemp()) / "pace.json"
+            W._last_yuanbao_at = 0.0
+            W._write_pace_stamp(time.time())
+            W.time.sleep = lambda secs: events.append("sleep")
+            W._yuanbao_get(sess, "https://so.qq.com/isearch?tab=weixin_article&query=x")
+        finally:
+            (W.yuanbao_gate, W.YUANBAO_MIN_INTERVAL, W._PACE_PATH, W._last_yuanbao_at,
+             W.time.sleep) = old
+        self.assertIn("sleep", events, "另一个进程的时刻没被看见")
+        self.assertLess(events.index("enter"), events.index("sleep"),
+                        "间隔在进闸之前等——闸外 sleep 挡不住第二个进程")
+        self.assertLess(events.index("sleep"), events.index("exit"))
 
 
 class _WxResp:
@@ -1030,24 +1130,132 @@ class TestWechatCaptchaGate(unittest.TestCase):
         self.assertNotIn("appmsgcaptcha", calls["url"])
 
 
+# ── 3.62.49 三档阶梯的离线驱动 ─────────────────────────────────────────────
+NEXT_PAGE_URL = "https://so.qq.com/searchweb/api/search/next-page"
+ISEARCH_URL = "https://so.qq.com/isearch?tab=weixin_article&query=x"
+ARTICLE_URL = "https://mp.weixin.qq.com/s?__biz=MzA&idx=1"
+
+
+def _dead_shape():
+    """熔断形原文（2026-11-27 实测 112 字节）：cards 空，timings 里连 search 都没有。
+
+    这一形必须读成「通道被短接」，不是「站内没这个词」——所以阶梯的默认桩就用它：
+    两档 POST 都回熔断形，用例就能落到旧 GET 兜底那一支，GET 那批页型判据照旧逐枚有效。
+    """
+    return json.dumps({"ok": True, "cards": [], "hasMore": False, "uuid": "u-1",
+                       "searchUuid": "u-1", "antispiderToken": "t-1",
+                       "timings": {"antispider": 23}})
+
+
+def _vm_vertical(title, link=None, account="公众号名称", summary="摘要内容",
+                 publish_time="2026-11-26 09:00:00", pub_time=1764000000,
+                 host="http://mp.weixin.qq.com"):
+    """垂直档一张卡（cards[].data.vm 形）。
+
+    title 外面裹上站点自己插的私有区高亮边界符 U+E40A/U+E40B——真响应 25 张里 23 张
+    带，解析层不剥就把脏字符交付给下游（2026-11-27 yb64mark.py 现读）。
+    """
+    return {"data": {
+        "vm": {"title": "\ue40a" + title + "\ue40b", "summary": summary,
+               "authorName": account, "publishTime": publish_time,
+               "jumpUrl": link if link is not None else
+               "http://mp.weixin.qq.com/s?__biz=MzA&idx=" + str(pub_time),
+               "host": host, "docId": "d", "imgUrl": "",
+               "isIweixin": 1, "isWxmpTab": 1, "cardInfo": {"classId": "30010612"}},
+        "item": {"jsonData": {"pub_time": pub_time, "doc_from": "q2q"}}}}
+
+
+def _vm_plain(title, link=ARTICLE_URL, author="山东税务", publish_time="2026-09-16 17:31:10",
+              content="摘要内容", host="https://www.qq.com"):
+    """综合档一张卡（card30010608 形：h5Url/author/publishTime，不是 url/showname/date）。
+
+    `host` 给门户域名：真页上非 mp 结果的 host 就是站点域名，只有 `h5Url` 才是文章
+    直链——缺 h5Url 时把 host 当直链交付是错的（与 `_parse_vertical_cards` 撤掉 host
+    回落同一条道理）。
+    """
+    return {"data": {"vm": {"title": title, "content": content, "author": author,
+                            "publishTime": publish_time, "h5Url": link,
+                            "host": host, "showname": "微信公众平台",
+                            "sourceType": "wechat", "cardInfo": {"classId": "30010608"}}}}
+
+
+def _cards_payload(cards, search_ms=744, has_more=False):
+    """把若干张卡包成一份取数响应；search_ms 是"上游检索真跑了"的那枚读数。"""
+    return json.dumps({"ok": True, "cards": cards, "hasMore": has_more, "uuid": "u-2",
+                       "searchUuid": "u-2", "antispiderToken": "t-2",
+                       "timings": {"antispider": 20, "oas": 0, "search": search_ms}},
+                      ensure_ascii=False)
+
+
+def _wx_run(get_html="", get_url=ISEARCH_URL, get_status=200, vertical=None, plain=None,
+            keyword="某词", size=3, gate_timeout=False, calls=None, **kw):
+    """离线跑一遍 `search_wechat`：两枚闸内帮手一起替。
+
+    `vertical`/`plain` 不给就是熔断形（这一档没拿到货）；给了就是这一档的真响应。
+    `calls` 传一个列表，逐发填 `{"method","url","kwargs"}`——注意 approve 握手那一发
+    也走 `_yuanbao_get`，按 URL 过滤。`DEAD_COOLDOWN` 归零，否则重发前要真空等 12 秒。
+    """
+    calls = calls if calls is not None else []
+    old = (W._yuanbao_get, W._yuanbao_post, W.DEAD_COOLDOWN)
+
+    def fake_get(sess, url, **kwargs):
+        calls.append({"method": "GET", "url": url, "kwargs": kwargs})
+        if gate_timeout:
+            raise TimeoutError("等待元宝串行闸超过 0 秒")
+        return _WxResp(get_html, get_url, get_status)
+
+    def fake_post(sess, url, **kwargs):
+        calls.append({"method": "POST", "url": url, "kwargs": kwargs})
+        if gate_timeout:
+            raise TimeoutError("等待元宝串行闸超过 0 秒")
+        # 档位认请求体里的 sp.tab，不认第几发：垂直档短接后阶梯会冷却重发同一档，
+        # 按计数分档就把综合档的响应喂给了垂直档解析器。
+        raw = kwargs.get("data") or b""
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8")
+        try:
+            sp = (json.loads(raw.decode("utf-8")) or {}).get("sp") or {}
+        except ValueError:
+            sp = {}
+        chosen = vertical if sp.get("tab") else plain
+        return _WxResp(chosen if chosen is not None else _dead_shape(), NEXT_PAGE_URL)
+
+    try:
+        W._yuanbao_get = fake_get
+        W._yuanbao_post = fake_post
+        W.DEAD_COOLDOWN = 0.0
+        return W.search_wechat(keyword, size=size, **kw)
+    finally:
+        W._yuanbao_get, W._yuanbao_post, W.DEAD_COOLDOWN = old
+
+
 class _WxSession:
-    """替身 Session：search_wechat 只用 headers.update 与 .get 两件事。"""
+    """替身 Session：`_yuanbao_get`/`_yuanbao_post` 只用 headers.update、get、post 三件事。"""
 
     def __init__(self, resp):
         self.resp = resp
         self.headers = {}
         self.get_calls = []
+        self.post_calls = []
 
     def get(self, url, **kw):
         self.get_calls.append(url)
+        return self.resp
+
+    def post(self, url, **kw):
+        self.post_calls.append((url, kw))
         return self.resp
 
 
 class TestWechatSearchZeroHit(unittest.TestCase):
     """元宝检索：零命中、登录墙、验证码墙与页面改版必须分开。"""
 
+    # 2026-11-27 修报告 §5.3 之后：判「站内没货」只认站点自己的空结果文案
+    # （SITE_EMPTY_MARK），结果容器不算证据。夹具把这句一并带上——真页面上
+    # 容器与站点文案同时出现（chunk module 868170 的空结果组件）。
     ZERO_HIT_HTML = ('<html><body><div class="js-results">'
-                     '<p>没有找到相关的微信公众号文章。</p></div></body></html>')
+                     '<p>没有找到相关的微信公众号文章。</p>'
+                     '<p>抱歉，没有找到相关网页</p></div></body></html>')
     LOGIN_HTML = ('<html><body><a data-x="linkid&quot;:&quot;login_page&quot;">'
                   '请登录后继续查看内容</a></body></html>')
     CAPTCHA_HTML = ('<html><head><script src="/static/antispider.min.js"></script></head>'
@@ -1056,20 +1264,13 @@ class TestWechatSearchZeroHit(unittest.TestCase):
     RESULT_HTML = ('<html><body><div class="js-results antispiderToken">'
                    '<a data-x="linkid&quot;:&quot;source&quot;"><span>财税小课堂</span>'
                    '<span>2天前</span></a><a href="https://mp.weixin.qq.com/s?k=1" '
-                   'data-x="linkid&quot;:&quot;title&quot;">留抵退税问答</a>'
+                   'data-x="linkid&quot;:&quot;title&quot;">某词留抵退税问答</a>'
                    '<div class="sa-text">摘要提到验证码，但不是拦截页</div>'
                    '</div></body></html>')
 
-    def _search_with(self, html, url="https://so.qq.com/isearch?tab=weixin_article&query=x",
-                     status=200):
-        resp = _WxResp(html, url, status)
-        fake = _WxSession(resp)
-        old = W._yuanbao_get
-        try:
-            W._yuanbao_get = lambda sess, u, **kw: fake.get(u)
-            return W.search_wechat("某词", size=3)
-        finally:
-            W._yuanbao_get = old
+    def _search_with(self, html, url=ISEARCH_URL, status=200):
+        # 两档 POST 默认回熔断形 ⇒ 阶梯落到 GET 兜底，这一族钉的还是 GET 页型
+        return _wx_run(get_html=html, get_url=url, get_status=status)
 
     def test_genuine_zero_hit_is_clean_not_a_failed_channel(self):
         r = self._search_with(self.ZERO_HIT_HTML)
@@ -1079,12 +1280,21 @@ class TestWechatSearchZeroHit(unittest.TestCase):
         self.assertTrue(r.get("_zero_hit"))
         self.assertFalse(r.get("_fetch_failed"))
 
-    def test_login_wall_is_a_fetch_failure_not_zero_hit(self):
+    def test_rate_limit_page_is_a_fetch_failure_not_a_login_wall(self):
+        """「请登录后继续查看内容」是站点自己的限流标题，不是账号墙。
+
+        逐字来自前端 chunk `getRateLimitTitle`：`case"429_outer":return"请登录后继续
+        查看内容"`，渲染器 `WebLoginRequiredPlaceholder` 只在 `allowLogin` 时才给登录
+        入口。旧判据把它读成"登录墙"，于是限流窗口被交付成"你得登录"——本层从未有
+        登录态可言，这一句把读者和使用方一起带偏（报告 §5.1 的误伤点）。
+        """
         r = self._search_with(self.LOGIN_HTML)
         self.assertEqual(0, r["total"])
         self.assertTrue(r.get("_fetch_failed"))
         self.assertFalse(r.get("_zero_hit"))
-        self.assertIn("登录墙", r["_error"])
+        self.assertIn("限流", r["_error"])
+        self.assertIn("429_outer", r["_error"])
+        self.assertNotIn("需要登录", r["_error"])
 
     def test_captcha_wall_is_a_fetch_failure_not_zero_hit(self):
         r = self._search_with(self.CAPTCHA_HTML)
@@ -1152,7 +1362,7 @@ class TestWechatSearchZeroHit(unittest.TestCase):
 
     def test_all_invalid_links_are_failure_not_a_delivered_zero_hit(self):
         r = self._search_with('<a href="https://example.test/a" '
-                              'data-x="linkid&quot;:&quot;title&quot;">题名</a>')
+                              'data-x="linkid&quot;:&quot;title&quot;">某词题名</a>')
         self.assertEqual(0, r["total"])
         self.assertTrue(r.get("_fetch_failed"))
         self.assertFalse(r.get("_zero_hit"))
@@ -1163,14 +1373,7 @@ class TestWechatEmptyBodyIsItsOwnShape(unittest.TestCase):
     """HTTP 200 / 0 字节是空响应，不能改称零命中或页面改版。"""
 
     def _search_with(self, html):
-        resp = _WxResp(html, "https://so.qq.com/isearch?tab=weixin_article&query=x")
-        fake = _WxSession(resp)
-        old = W._yuanbao_get
-        try:
-            W._yuanbao_get = lambda sess, u, **kw: fake.get(u)
-            return W.search_wechat("某词", size=3)
-        finally:
-            W._yuanbao_get = old
+        return _wx_run(get_html=html)
 
     def test_zero_byte_page_says_the_channel_gave_nothing(self):
         r = self._search_with("")
@@ -1180,7 +1383,7 @@ class TestWechatEmptyBodyIsItsOwnShape(unittest.TestCase):
         self.assertIn("0 字节", r["_error"])
 
     def test_the_empty_body_sentence_does_not_blame_relayout(self):
-        """断供那一发不能同时说"可能改版"——那是把读者往错方向带。"""
+        """断供那一发不能同时说「可能改版」——那是把读者往错方向带。"""
         r = self._search_with("")
         self.assertNotIn("改版", r["_error"])
         self.assertNotIn("验证页", r["_error"])
@@ -1203,6 +1406,363 @@ class TestWechatEmptyBodyIsItsOwnShape(unittest.TestCase):
         """有正文、无结果、无登录或验证锚，仍走页面结构可能已变。"""
         r = self._search_with("<html><body>一段与检索无关的门户页</body></html>")
         self.assertIn("页面结构可能已变", r["_error"])
+
+
+class TestWechatLadderShapes(unittest.TestCase):
+    """3.62.49 主路（两档 POST）自己的形状：交付、短接、推词兜底、白名单、时间筛。
+
+    这一族是报告 §7 那句「测试没跟上主路」的正面补：GET 那批钉的是兜底档，
+    垂直档/综合档/熔断/兜底旗标的判据在旧测试里一枚都没有。
+    """
+
+    KEYWORD = "研发费用加计扣除"
+
+    def test_vertical_tier_delivers_and_strips_highlight(self):
+        body = _cards_payload([_vm_vertical("研发费用加计扣除的比例", pub_time=1)])
+        r = _wx_run(vertical=body, keyword=self.KEYWORD, size=3)
+        self.assertEqual(1, r["total"])
+        item = r["results"][0]
+        self.assertEqual("研发费用加计扣除的比例", item["title"],
+                         "站点插的私有区高亮边界符必须剥掉，否则脏字符交付给下游")
+        self.assertNotIn("\ue40a", json.dumps(r, ensure_ascii=False))
+        self.assertTrue(item["url"].startswith("http://mp.weixin.qq.com/s?"))
+        self.assertEqual("公众号名称", item["account"])
+        self.assertEqual("2026-11-26 09:00:00", item["date"])
+        self.assertFalse(r.get("_error"))
+        self.assertIn("只出一页", r["_caveat"], "hasMore=False 这件事要告诉读者")
+
+    def test_plain_tier_reads_h5url_author_publishTime(self):
+        """综合档卡片的键名与垂直档不同（h5Url/author/publishTime）——照垂直档取就全空。"""
+        body = _cards_payload([_vm_plain("增值税即征即退的适用范围")])
+        r = _wx_run(plain=body, keyword="增值税 即征即退", size=3)
+        self.assertEqual(1, r["total"])
+        item = r["results"][0]
+        self.assertEqual(ARTICLE_URL, item["url"])
+        self.assertEqual("山东税务", item["account"], "取成 showname 就是「微信公众平台」")
+        self.assertEqual("2026-09-16", item["date"], "取成 date 就丢日期")
+        self.assertIn("改用综合档", r["_caveat"])
+
+    def test_dead_channel_is_a_failure_not_a_zero_hit(self):
+        """两档都短接、GET 也只给骨架壳：报通道故障，绝不报「站内没这个词」。"""
+        r = _wx_run(get_html=TestWechatSearchZeroHit.BROKEN_HTML, keyword=self.KEYWORD)
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertFalse(r.get("_zero_hit"))
+        self.assertIn("短接", r["_error"])
+
+    def test_empty_batch_is_not_evidence_of_nothing_on_site(self):
+        """报告 §5.4：上游真跑了（search=744ms）却回 0 张卡——这不是站内没货的证据。
+
+        旧写法拿「垂直档回 0 张卡」当空证据，后两档再失败就交付成一份干净的零命中，
+        通道故障被伪装成「这个词站里没有」。
+        """
+        empty = json.dumps({"ok": True, "cards": [], "hasMore": False,
+                            "timings": {"antispider": 20, "search": 744}})
+        r = _wx_run(vertical=empty, plain=empty,
+                    get_html=TestWechatSearchZeroHit.BROKEN_HTML, keyword=self.KEYWORD)
+        self.assertTrue(r.get("_fetch_failed"), r)
+        self.assertFalse(r.get("_zero_hit"), "0 张卡不许判成零命中")
+        self.assertIn("0 张卡", r["_error"], r["_error"])
+
+    def test_recommendation_batch_is_a_zero_hit_with_its_reason(self):
+        """整批不含检索词的分词＝站点的推词兜底：报零命中，并把判据写在 _caveat 里。"""
+        body = _cards_payload([_vm_vertical("生产企业免抵退申报操作流程", pub_time=1)])
+        r = _wx_run(vertical=body, get_html='<p>抱歉，没有找到相关网页</p>',
+                    keyword=self.KEYWORD)
+        self.assertEqual(0, r["total"])
+        self.assertTrue(r.get("_zero_hit"), r.get("_error"))
+        self.assertFalse(r.get("_fetch_failed"))
+        self.assertIn("推词兜底", r["_caveat"])
+
+    def test_invalid_link_is_a_failure_not_a_zero_hit(self):
+        """报告 §5.2：站点给了货但链形不对，是通道故障，不是站内没这个词。"""
+        body = _cards_payload([_vm_vertical("研发费用加计扣除的比例",
+                                           link="https://example.test/a")])
+        r = _wx_run(vertical=body, get_html=TestWechatSearchZeroHit.BROKEN_HTML,
+                    keyword=self.KEYWORD)
+        self.assertTrue(r.get("_fetch_failed"), r.get("_error"))
+        self.assertFalse(r.get("_zero_hit"))
+        self.assertIn("不是 mp.weixin.qq.com 文章直链", r["_error"])
+
+    def test_a_missing_jumpUrl_does_not_fall_back_to_the_channel_host(self):
+        """报告 §5.2 的第二半：`vm.host` 是频道首页，它自己也过 mp 白名单。
+
+        2026-11-27 注入证伪：把 `or vm.get("host")` 塞回取值链，上一枚用例照样绿——
+        夹具的 host 正是 `http://mp.weixin.qq.com`，白名单认它。缺 jumpUrl 的卡只能
+        记进 bad_link：把首页当"直链"交回去，读者点了什么文章都进不去。
+        """
+        body = _cards_payload([_vm_vertical("研发费用加计扣除的比例", link="",
+                                           host="http://mp.weixin.qq.com")])
+        r = _wx_run(vertical=body, get_html=TestWechatSearchZeroHit.BROKEN_HTML,
+                    keyword=self.KEYWORD)
+        self.assertTrue(r.get("_fetch_failed"), r.get("_error"))
+        self.assertFalse(r.get("_zero_hit"))
+        self.assertIn("不是 mp.weixin.qq.com 文章直链", r["_error"])
+        for item in r["results"]:
+            self.assertNotEqual("http://mp.weixin.qq.com", item["url"],
+                                "频道首页被当成文章直链交付了")
+
+    def test_first_card_dead_second_card_delivered(self):
+        """报告 §5.7 验收：第一条无效、第二条有效、size=1 ⇒ 交付第二条。"""
+        body = _cards_payload([_vm_vertical("研发费用加计扣除的口径", link="http://evil.test/x"),
+                              _vm_vertical("研发费用加计扣除的比例", pub_time=2)])
+        r = _wx_run(vertical=body, keyword=self.KEYWORD, size=1)
+        self.assertEqual(1, r["total"])
+        self.assertEqual("研发费用加计扣除的比例", r["results"][0]["title"])
+        self.assertIn("另有 1 张卡被微信直链白名单挡掉", r["_caveat"])
+
+    def test_time_filter_reaches_both_post_tiers(self):
+        """报告 §5.6：时间筛只给垂直档，落到综合档就悄悄丢了读者的限定。"""
+        calls = []
+        _wx_run(keyword=self.KEYWORD, time_filter="1m", calls=calls)
+        posts = [c for c in calls if c["method"] == "POST"]
+        self.assertTrue(posts)
+        for entry in posts:
+            sp = json.loads(entry["kwargs"]["data"].decode("utf-8"))["sp"]
+            self.assertEqual("1m", sp.get("timeFilter"), entry["kwargs"]["data"][:120])
+        plain = json.loads(posts[-1]["kwargs"]["data"].decode("utf-8"))["sp"]
+        self.assertNotIn("tab", plain, "最后一发是综合档，不该带垂直档的 tab")
+
+    def test_vertical_tier_sends_the_original_uri_header(self):
+        """档位由 `sp.tab` 与 `x-original-uri` 两枚一起决定，缺一回 0 张卡（实测）。"""
+        calls = []
+        _wx_run(keyword=self.KEYWORD, calls=calls)
+        first = [c for c in calls if c["method"] == "POST"][0]
+        self.assertEqual(NEXT_PAGE_URL, first["url"])
+        headers = first["kwargs"]["headers"]
+        self.assertEqual("application/json", headers["Content-Type"])
+        self.assertTrue(headers["x-original-uri"].startswith("/iweixin?tab=weixin_article&query="),
+                        headers["x-original-uri"])
+        self.assertNotIn("x-original-uri",
+                         [c for c in calls if c["method"] == "POST"][-1]["kwargs"]["headers"],
+                         "综合档不发这枚头")
+
+    def test_truncated_response_is_refused(self):
+        """报告 §6.5：被截断的 JSON 不能当成一份完整清单用。"""
+        big = _cards_payload([_vm_vertical("研发费用加计扣除" + "长" * 400)])
+        with mock.patch.object(W, "MAX_BODY_BYTES", 128):
+            r = _wx_run(vertical=big, plain=big, keyword=self.KEYWORD)
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertIn("上限并被截断", r["_error"], r["_error"])
+
+    def test_a_result_container_alone_is_not_evidence_of_an_empty_site(self):
+        """报告 §5.3：`js-results`/`result-card` 只是容器，客户端骨架页同样带壳。
+
+        把这一支读成 site-empty，通道故障就被交付成一份干净的「站内没这个词」。
+        正面证据只有两种：站点自己的空结果文案，或整批推词兜底。
+        2026-11-27 注入证伪：这一枚改回 "site-empty" 时全族没报红。
+        """
+        shell = ('<html><body><div class="js-results">'
+                 '<div class="result-card"></div></div></body></html>')
+        r = _wx_run(get_html=shell, keyword=self.KEYWORD)
+        self.assertTrue(r.get("_fetch_failed"), r)
+        self.assertFalse(r.get("_zero_hit"), "有结果容器不等于站里没货")
+        self.assertIn("一张卡都没解析出来", r["_error"], r["_error"])
+
+    def test_finalize_filters_dead_links_before_truncating(self):
+        """报告 §5.7 的合同要由 `_finalize` 自己钉住。
+
+        阶梯用例测不到这一枚：垂直档已在上游把无链卡剔掉，交下来的清单本来就
+        全有链。2026-11-27 注入证伪把顺序倒回「先截 size 再滤」，全绿。GET 兜底
+        那一路会把带 `_error` 的无链条目直接交给 `_finalize`，这条合同必须有尺。
+        """
+        dead = {"title": "研发费用加计扣除的口径", "url": "", "date": "", "account": "",
+                "summary": "", "date_text": "", "date_approx": False, "timestamp": None,
+                "_error": "元宝结果链接不是 mp.weixin.qq.com 文章直链"}
+        alive = {"title": "研发费用加计扣除的比例",
+                 "url": "http://mp.weixin.qq.com/s?__biz=MzA&idx=2",
+                 "date": "2026-11-25", "account": "公众号名称", "summary": "摘要",
+                 "date_text": "2026-11-25 09:00:00", "date_approx": False,
+                 "timestamp": 2}
+        out = W._finalize("研发费用加计扣除", [dead, alive], 1, False)
+        self.assertEqual(1, out["total"], out.get("_error"))
+        self.assertEqual("研发费用加计扣除的比例", out["results"][0]["title"],
+                         "第一条无效就把整轮判成「一条有效直链都没有」，把能交付的第二条挡掉了")
+        self.assertNotIn("_error", out)
+
+    def test_gate_timeout_becomes_an_envelope(self):
+        """报告 §5.10：串行闸的 TimeoutError 不许穿透公共函数。"""
+        r = _wx_run(keyword=self.KEYWORD, gate_timeout=True)
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertFalse(r.get("_zero_hit"))
+        self.assertIn("串行闸", r["_error"], r["_error"])
+
+    def test_bad_arguments_are_envelopes_not_exceptions(self):
+        """报告 §6.4：size="10"/1.5/True 都该报错回来，不该抛 TypeError。"""
+        for bad in ("10", 1.5, True, 0):
+            calls = []
+            r = _wx_run(keyword=self.KEYWORD, size=bad, calls=calls)
+            self.assertIn("size 必须是正整数", r["_error"], repr(bad))
+            self.assertEqual([], calls, "参数没过校验就不该发任何请求")
+        calls = []
+        r = _wx_run(keyword=self.KEYWORD, time_filter="1h", calls=calls)
+        self.assertIn("time_filter 只认", r["_error"])
+        self.assertEqual([], calls)
+
+    def test_non_numeric_timings_do_not_crash_the_shape_check(self):
+        """站点把 timings.search 给成字符串甚至缺失时不能崩在判据里（报告 §6.4）。"""
+        shape = json.dumps({"ok": True, "cards": [], "hasMore": False,
+                            "timings": {"search": "19"}})
+        r = _wx_run(vertical=shape, plain=shape,
+                    get_html=TestWechatSearchZeroHit.BROKEN_HTML, keyword=self.KEYWORD)
+        self.assertTrue(r.get("_fetch_failed"))
+        self.assertIn("短接", r["_error"])
+
+    def test_session_is_closed_on_every_exit(self):
+        """报告 §6.2：一轮检索最多五次 HTTP，Session 不能留在进程里。"""
+        closed = []
+
+        class _ClosingSession:
+            def __init__(self):
+                self.headers = {}
+
+            def get(self, url, **kw):
+                return _WxResp("", ISEARCH_URL)
+
+            def post(self, url, **kw):
+                return _WxResp(_dead_shape(), NEXT_PAGE_URL)
+
+            def close(self):
+                closed.append(True)
+
+        old = W.requests.Session
+        try:
+            W.requests.Session = _ClosingSession
+            # 闸与频次账绕开：这一枚只钉「关没关」
+            W.search_wechat("研发费用加计扣除", size=2)
+        finally:
+            W.requests.Session = old
+        self.assertEqual([True], closed, "Session 没被关掉")
+
+
+class TestWechatReadArticleUrlBoundary(unittest.TestCase):
+    """报告 §5.1：正文那一发的 URL 边界——离线复现里 `http://127.0.0.1/private` 真的发了请求。"""
+
+    def _capture(self):
+        calls = []
+
+        def fake_get(url, **kw):
+            calls.append((url, kw))
+            return _WxResp('<div id="js_content"><p>正文</p></div>', url)
+
+        return calls, mock.patch.object(W.requests, "get", fake_get)
+
+    def test_a_local_url_never_reaches_the_network(self):
+        calls, patcher = self._capture()
+        with patcher:
+            body, error = W.read_article("http://127.0.0.1/private")
+        self.assertEqual([], calls, "白名单之外的 URL 必须在出网之前就拒掉")
+        self.assertEqual("", body)
+        self.assertIn("已拒绝读取", error)
+
+    def test_lookalike_host_port_and_userinfo_are_refused(self):
+        calls, patcher = self._capture()
+        for link in ("https://mp.weixin.qq.com.evil.test/s?x=1",
+                     "https://mp.weixin.qq.com:443/s?x=1",
+                     "https://user@mp.weixin.qq.com/s?x=1",
+                     "ftp://mp.weixin.qq.com/s?x=1", "/s?x=1", ""):
+            with patcher:
+                body, error = W.read_article(link)
+            self.assertEqual("", body, link)
+            self.assertIn("已拒绝读取", error, link)
+        self.assertEqual([], calls, "六枚非法 URL 一枚都不该出网")
+
+    def test_a_cross_host_redirect_is_not_followed(self):
+        """被 302 带去别的主机＝落地页不再是微信文章，拒绝读，不跟。"""
+        calls = []
+
+        def fake_get(url, **kw):
+            calls.append((url, kw))
+            resp = _WxResp("", url, status=302)
+            resp.headers = {"Location": "https://evil.test/landing"}
+            return resp
+
+        with mock.patch.object(W.requests, "get", fake_get):
+            body, error = W.read_article(ARTICLE_URL)
+        self.assertEqual(1, len(calls))
+        self.assertEqual(False, calls[0][1]["allow_redirects"], "必须自己攥住重定向")
+        self.assertEqual("", body)
+        self.assertIn("不跟随", error)
+        self.assertIn("evil.test/landing", error)
+
+    def test_a_same_host_upgrade_is_followed(self):
+        """真网形状：http 版文章地址被 301 升级到同主机 https，要跟上去。
+
+        2026-11-27 端到端实测（yb74e2e.py）：检索交付 `http://mp.weixin.qq.com/s?…`，
+        微信 301 到 `https://mp.weixin.qq.com/s?…`。一律拒跳会让正文这一路全断，
+        而拒跳真正要防的是被带去**别的**主机。
+        """
+        calls = []
+
+        def fake_get(url, **kw):
+            calls.append((url, kw))
+            if len(calls) == 1:
+                resp = _WxResp("", url, status=301)
+                resp.headers = {"Location": url.replace("http://", "https://")}
+                resp.closed = False
+                return resp
+            return _WxResp('<div id="js_content"><p>升级后的正文</p></div>'
+                           '<script>var biz="";</script>', url)
+
+        with mock.patch.object(W.requests, "get", fake_get):
+            body, error = W.read_article("http://mp.weixin.qq.com/s?__biz=MzA&idx=1")
+        self.assertEqual("", error)
+        self.assertEqual("升级后的正文", body)
+        self.assertEqual(2, len(calls), "只该跟一跳")
+        self.assertTrue(calls[1][0].startswith("https://mp.weixin.qq.com/s"))
+        self.assertEqual(False, calls[0][1]["allow_redirects"], "仍要自己攥住跳转")
+
+    def test_a_redirect_loop_is_capped(self):
+        """同主机互跳不能无界跟随：到上限就报失败，不发第 N+1 发。"""
+        calls = []
+
+        def fake_get(url, **kw):
+            calls.append(url)
+            resp = _WxResp("", url, status=302)
+            resp.headers = {"Location": url + "&bump=%d" % len(calls)}
+            return resp
+
+        with mock.patch.object(W.requests, "get", fake_get):
+            body, error = W.read_article(ARTICLE_URL)
+        self.assertEqual("", body)
+        self.assertIn("跳转次数超限", error)
+        self.assertEqual(W.MAX_REDIRECT_HOPS + 1, len(calls))
+
+    def test_a_relative_location_stays_on_wechat(self):
+        """Location 是相对路径时按当前地址解析，仍然只有微信主机能过白名单。"""
+        calls = []
+
+        def fake_get(url, **kw):
+            calls.append(url)
+            if len(calls) == 1:
+                resp = _WxResp("", url, status=302)
+                resp.headers = {"Location": "/mp/wappoc_appmsgcaptcha?poc_token=x"}
+                return resp
+            return _WxResp('<div id="js_content"><p>过验证后的正文</p></div>', url)
+
+        with mock.patch.object(W.requests, "get", fake_get):
+            body, error = W.read_article(ARTICLE_URL)
+        self.assertIn("mp.weixin.qq.com/mp/wappoc_appmsgcaptcha", calls[1])
+        self.assertIn("验证码门", error)
+        self.assertEqual("", body)
+
+    def test_the_body_is_size_capped(self):
+        huge = '<div id="js_content">' + "<p>正文很长</p>" * 400 + "</div>"
+
+        def fake_get(url, **kw):
+            return _WxResp(huge, url)
+
+        with mock.patch.object(W.requests, "get", fake_get), \
+             mock.patch.object(W, "MAX_BODY_BYTES", 256):
+            body, error = W.read_article(ARTICLE_URL)
+        self.assertEqual("", body)
+        self.assertIn("上限并被截断", error)
+
+    def test_the_response_is_closed(self):
+        resp = _WxResp('<div id="js_content"><p>正文</p></div>', ARTICLE_URL)
+        with mock.patch.object(W.requests, "get", lambda url, **kw: resp):
+            W.read_article(ARTICLE_URL)
+        self.assertTrue(resp.closed, "响应没关掉")
+
 
 class _NpcResp:
     """够用的 NPC 响应替身：HTTP 永远 200，业务状态只活在 JSON 里。"""
@@ -2092,6 +2652,13 @@ def _tuple_contract_offenders(path):
         arity = (len(ann.slice.elts)
                  if isinstance(ann, ast.Subscript) and isinstance(ann.slice, ast.Tuple)
                  else None)
+        # `tuple[str, ...]` 是变长注解，不是「几个元素」的约定：把省略号也数进 arity
+        # 就会要求 `return tuple(...)` 写成元组字面量，这是门禁的盲区而不是代码的缺陷
+        # （2026-11-27 `_query_tokens` 撞过一次）。变长一律只钉「必须是元组」，不钉长度。
+        if (arity is not None and ann.slice.elts
+                and isinstance(ann.slice.elts[-1], ast.Constant)
+                and ann.slice.elts[-1].value is Ellipsis):
+            arity = None
         inner = set()
         for sub in ast.walk(fn):
             if sub is fn or not isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef,
@@ -2101,8 +2668,17 @@ def _tuple_contract_offenders(path):
         for r in (n for n in ast.walk(fn)
                   if isinstance(n, ast.Return) and n.value is not None
                   and id(n) not in inner):
-            is_tuple = isinstance(r.value, ast.Tuple)
-            right_arity = arity is None or (is_tuple and len(r.value.elts) == arity)
+            # `tuple(...)` 也是元组，只是字面量长度看不出来（2026-11-27 `_query_tokens`
+            # 撞过一次）：固定枚数的注解仍要求写字面量，变长注解放过调用形式。
+            literal = isinstance(r.value, ast.Tuple)
+            called = (isinstance(r.value, ast.Call)
+                      and isinstance(r.value.func, ast.Name)
+                      and r.value.func.id == "tuple")
+            is_tuple = literal or called
+            if arity is None:
+                right_arity = True
+            else:
+                right_arity = literal and len(r.value.elts) == arity
             if not (is_tuple and right_arity):
                 offenders.append((fn.name, r.lineno, ast.unparse(r.value)))
     return offenders
@@ -3107,6 +3683,22 @@ class TestSogouWebSearch(unittest.TestCase):
         self.assertEqual(0, out["total"])
         self.assertIn("熔断", out["_error"])
 
+    def test_a_gate_wait_timeout_is_a_failure_envelope(self):
+        """报告 §5.10：串行闸等超时的 TimeoutError 不许从公共函数穿出去。
+
+        2026-11-27 注入证伪：把 `_fetch` 里那枚 `except TimeoutError` 换成永不发生
+        的异常，整族全绿——当时没有任何用例打过这一支。闸被别的进程占住是常态，
+        调用方拿到裸异常就等于拿到一次崩溃。
+        """
+        def angry(*a, **kw):
+            raise TimeoutError("等待搜狗串行闸超过 0 秒——说明另有进程正在打搜狗")
+
+        with mock.patch.object(SOG, "_get", side_effect=angry):
+            out = SOG.sogou_search("增值税", site="shui5.cn")
+        self.assertTrue(out.get("_fetch_failed"), out)
+        self.assertFalse(out.get("_zero_hit"))
+        self.assertIn("串行闸", out["_error"], out["_error"])
+
     def test_budget_full_refuses_before_any_request(self):
         now = time.time()
         SOG._write_state({"recent": [now] * SOG.BUDGET_MAX,
@@ -3264,6 +3856,41 @@ class TestSogouMobileDataIsland(unittest.TestCase):
         for r in rows:
             with self.subTest(host=r["source"]):
                 self.assertEqual("", r["date"])
+
+    def test_a_card_with_the_right_shape_but_not_the_query_is_not_a_result(self):
+        """报告 §5.5 的第二道闸：带 `cardInfo` 也不等于这一轮的答案。
+
+        2026-11-27 注入证伪：把 `_island_title_hit` 那一枚查询参数抹成空串（等于
+        相关性闸永不生效），整类全绿——站点在推荐位上照样给出结构完整的卡片，
+        只查归属查不出它不是这条查询的结果。
+        """
+        island = ('<script type="application/json">'
+                  + json.dumps({"url": "https://www.chinatax.gov.cn/a",
+                                "title": "今日税收要闻", "content": "与检索词无关",
+                                "cardInfo": {"classId": "30010582"}})
+                  + '</script>')
+        rows, raw = SOG._island_rows(island, "", "研发费用加计扣除")
+        self.assertEqual(0, raw, "不含检索词的推荐卡一枚都不该计数：%r" % raw)
+        self.assertEqual([], rows)
+
+    def test_a_recommendation_page_is_a_failure_not_a_zero_hit(self):
+        """整页都是推荐位时报取数失败，不交付「站内没这个词」。
+
+        这一支原先写在函数末支——「有结果区、零直链」在那之前就被结构改版那支
+        接走了，所以末支那段判据永远不会命中（注入证伪时改坏没报红）。2026-11-27
+        把它移到改版那支之前。HTML 卡层被 site: 过滤掉那一路仍判零命中：那是站点
+        真给了相关结果、只是不在目标站上。
+        """
+        html = ('<div class=vrResult>'
+                '<script type="application/json">'
+                + json.dumps({"url": "https://www.shui5.cn/a",
+                              "title": "今日税收要闻", "content": "与检索词无关",
+                              "cardInfo": {"classId": "30010582"}})
+                + '</script></div>')
+        out = self._search(html, site="shui5.cn")
+        self.assertTrue(out.get("_fetch_failed"), out)
+        self.assertFalse(out.get("_zero_hit"), "推荐位不能交付成站内没货")
+        self.assertIn("推荐位", out["_error"], out["_error"])
 
     def test_site_filter_applies_to_island_rows(self):
         rows = self._search(self.page, site="chinatax.gov.cn")["results"]
@@ -5954,8 +6581,11 @@ class TestUnifiedExitMarkerContract(unittest.TestCase):
     """
 
     RESULT_URL = SH.SEARCH_RESULT + "?page=0&searchid=12345"
+    # 判「站内没货」只认站点自己的空结果文案（报告 §5.3）：结果容器不算证据——
+    # 它同时也是客户端渲染骨架页的组成部分。夹具把这句一起带上，真页面上两者同现。
     WX_ZERO_HTML = ('<html><body><div class="js-results">'
-                    '<p class="p3">没有找到相关的微信公众号文章。</p></div></body></html>')
+                    '<p class="p3">没有找到相关的微信公众号文章。</p>'
+                    '<p>抱歉，没有找到相关网页</p></div></body></html>')
     WX_BROKEN_HTML = "<html><body> totally restructured, no blocks, no marker </body></html>"
 
     class _Shui5Session:
@@ -6011,14 +6641,20 @@ class TestUnifiedExitMarkerContract(unittest.TestCase):
             return WS.search_chinatax(keyword, size=10)
 
     def _wechat(self, html, keyword="契约词"):
-        fake = _WxSession(_WxResp(
-            html, "https://so.qq.com/isearch?tab=weixin_article&query=x", 200))
-        old = W._yuanbao_get
+        """契约族这一枚钉的是 GET 兜底页型 ⇒ 主路两发 POST 必须回熔断形。
+
+        2026-11-27：只替 `_yuanbao_get` 的旧桩会让 POST 真的打出去（报告 §7「不 hermetic」），
+        于是这一族名义离线、实际吃网络与频控。
+        """
+        fake = _WxSession(_WxResp(html, ISEARCH_URL, 200))
+        old = (W._yuanbao_get, W._yuanbao_post, W.DEAD_COOLDOWN)
         try:
             W._yuanbao_get = lambda sess, u, **kw: fake.get(u)
+            W._yuanbao_post = lambda sess, u, **kw: _WxResp(_dead_shape(), NEXT_PAGE_URL)
+            W.DEAD_COOLDOWN = 0.0
             return W.search_wechat(keyword, size=3)
         finally:
-            W._yuanbao_get = old
+            W._yuanbao_get, W._yuanbao_post, W.DEAD_COOLDOWN = old
 
     def _sogou(self, html, err="", blocked=False, keyword="契约词"):
         with mock.patch.object(SOG, "_cache", tax_cache.CacheManager(enabled=False)), \

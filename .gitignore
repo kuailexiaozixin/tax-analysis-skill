@@ -34,3 +34,9 @@ subskills/*_bk_*/
 search_source/*_backup_*/
 search_source/*_bk_*/
 
+# 离线审计插件的读数落点（2026-11-24 那轮 netblock_plugin.py 写在当前工作目录）。
+# 它记的每一条结论已经进了 references/source_defects.md 与 tests/test_offline_guard.py
+# 的文件头，产物本身零价值；三仓 3.62.29 那次 `git add -A` 误收过它，规则写死在这里
+# 是为了让「顺手 add」这条路彻底不存在。
+netblock-report.txt
+

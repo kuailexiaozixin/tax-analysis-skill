@@ -1,7 +1,7 @@
 ---
 name: tax-analysis-skill
 description: "税务问题分析引擎：先判定问题类型与缺失前提，再从上位法逐层向下检索到行政法规、地方口径与实务案例，多源聚合后按规范层级、时效与角色给每条依据定级（三根轴各判各的，不折算成分数），最后输出带限制条件的分析结论。适用于一切涉及税与费的问题——某个税怎么算、能不能享受优惠、该按什么税目归类、怎么办理、多久之内办、有什么风险、两个方案选哪个，以及法规原文的条款填空与选项判断、政策与案例检索。回答前一律实时联网核查，不使用训练数据中的政策记忆。"
-version: "3.62.48"
+version: "3.62.49"
 ---
 
 # 税务问题分析引擎 (Tax Analysis Engine)
@@ -454,7 +454,7 @@ tax_cases.py "<主题>" --element <争议要素>`）。类案是**支持层不�
 | 税屋 shui5.cn | 实务解读、专栏、答疑。**正文可取，但要凭据**：没放行 cookie 时首页、文章页、`robots.txt` 与一个不存在的路径回同一份挑战页，HTTP 都是 200 | ⭐⭐⭐ | 实时 | 两条检索通道 + 本机浏览器过一次 WAF 后连读；机制见 `search_source/shui5/` |
 | 中国税网 ctaxnews.com.cn（子技能 ctaxnews） | 中国税务报社站：政策转载、解读、税案通报、地方税收法规。**登载件不是法定依据**，被它登的那份文件才是 | 实务解读 ⭐⭐⭐ | 实时 | 开放 JSON `GET /xy/Search.do`（源键 `ctax`），`scripts/tax_ctax.py` 直连无凭据；④ 默认名单第 6 源，聚合回题录与摘要，正文单发 `tax_ctax.py --read`。值域与一稿多发见 `search_source/ctaxnews/` |
 | 中国税务报网络报（数字报，`scripts/tax_paper.py`） | 中国税务报当日版面全文，逐日可回溯。与上一行同社不同站、模板不共用：可比 29 枚同稿仅 6 枚 | 实务报道 ⭐⭐⭐；登载的文件仍回 L2 取 | 当天出版（周四／周六／周日整站不发）；本地六小时缓存 | 版面页/文章页直连；**站内检索接口不可用**，关键词靠逐日扫版面。**不进 ④ 默认名单**：同稿两副标题按标题去重会错并成一条、`total` 恒为 `null`、一次扫描是八版面乘几十篇文章页的成本。独立口 `POST /api/paper`；四档 `_status` 见 `search_source/netpaper/` |
-| 微信公众号 (元宝搜索) | 实务解读、申报实操 | ⭐⭐ | 实时 | 元宝 `GET so.qq.com/isearch?tab=weixin_article` SSR HTML，结果直连 `mp.weixin.qq.com/s`；无翻页，`size` 只截当页，相对日期标 `date_approx=True`；`tax_wechat.yuanbao_gate`（`tax_http.SerialGate`／锁 `tax-engine-yuanbao.lock`／超时 180 秒）＋ `YUANBAO_MIN_INTERVAL=1.5` 秒；聚合键 `wechat`，单条 `source=微信公众号`、`source_label=实务解读`；页型与契约见 `search_source/wechat/` |
+| 微信公众号 (元宝搜索) | 实务解读、申报实操 | ⭐⭐ | 实时 | 元宝主路 `POST so.qq.com/searchweb/api/search/next-page`（`sp.tab=weixin_vertical`＋`x-original-uri` 两枚缺一不可；3.62.49 起，`GET so.qq.com/isearch?tab=weixin_article` 只作第三档兜底且是 SSR 骨架页），三档阶梯取数，结果直连 `mp.weixin.qq.com/s`；垂直档 `hasMore=false` 只出一页，`size` 只在这批里截，相对日期标 `date_approx=True`；判空先看 `timings.search`（十几毫秒＝通道短接，报 `_fetch_failed` 不报站内没货）；`tax_wechat.yuanbao_gate`（`tax_http.SerialGate`／锁 `tax-engine-yuanbao.lock`／超时 180 秒）＋ 闸内 `YUANBAO_MIN_INTERVAL=1.5` 秒（盘上 `tax-engine-yuanbao-pace.json` 跨进程记账）；聚合键 `wechat`，单条 `source=微信公众号`、`source_label=实务解读`；通道形状与契约见 `search_source/wechat/` |
 | 会计视野论坛（子技能 chenyiwei-bbs） | 陈版主实务答疑、监管处罚案例、准则衍生问答，附企业会计准则原文。**答会计口径，不是税收规定** | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 按批进库、间隔不固定，取「最近」时窗口可整段为空 | 公开 REST API 直连无 key；见 `search_source/chenyiwei-bbs/` |
 | 审计文库 MaoDocs（子技能 maodocs） | docs.maoyanqing.com 规范原文全文：企业/政府/小企业会计准则、审计准则、内控规范、资产评估准则、证监会适用指引。**答专业口径原文，不是税收规定** | 专业口径 ⭐⭐⭐⭐；税收依据 无 | 实时（sitemap lastmod 到 2026-09-28） | 纯标准库直连静态站；见 `search_source/maodocs/` |
 | 深交所法律规则（子技能 szse-lawrules） | www.szse.cn/www/lawrules 目录：法律/行政法规/司法解释/证监会规章·指引·规范性文件/废止公告 + 十一类自律规则。**答证券交易场所口径与原文定位** | 专业口径 ⭐⭐⭐；税收依据 无 | 实时（当日枚举 724 条入索引：8 枚 static 通道求和 602 + 快照 122；11 枚 browser 通道 2026-11-26 实测共 155 条，未入索引） | 先 `build` 建索引再离线 `query`；见 `search_source/szse-lawrules/` |

@@ -16,6 +16,13 @@
     python tests/probe_rate_limit.py --target fgk-list --dry-run   # 只看要发的请求，一个不发
     python tests/probe_rate_limit.py --target sogou-mobile --burst 6 --threads 2 --per-thread 2
     python tests/probe_rate_limit.py --target yuanbao --dry-run
+    python tests/probe_rate_limit.py --target yuanbao --burst 4 --threads 2 --per-thread 1
+
+`yuanbao` 量的是 POST 取数主路（`searchweb/api/search/next-page` 的
+`sp.tab=weixin_vertical`）。GET `/isearch` 是阶梯的第三档兜底，SSR 那一路连结果
+都不渲染，量它没有意义。这一枚要小水量：2026-11-27 实测 8 秒间隔连打到第三、四发
+就整批回空（112 字节 0 卡、`timings.search` 只剩十几毫秒），25 秒间隔三连发不翻空
+——那是冷却窗口，不是账号问题，形态里的「200-通道短接」就是它。
 
 元宝公众号检索（`yuanbao`）、搜狗手机网页检索（`sogou-mobile`）与公众号正文读取
 （`wechat-read`）分别量。
@@ -117,10 +124,26 @@ def _fgk_call():
 
 
 def _yuanbao_call():
+    """取数主路那一发（3.62.49 起是 POST next-page 的垂直档）。
+
+    为什么不再量 GET：GET `/isearch` 现在是三档阶梯的第三档兜底，而 SSR 那一路
+    根本不渲染结果——量它等于量一条不常用的路。真正在挨限流的是垂直档 POST。
+    形状逐字照 `_vertical_search`：同一个接口、`sp.tab=weixin_vertical`、
+    `x-original-uri` 头、`data` 是 `ensure_ascii=False` 编出的 UTF-8 字节。这四样
+    少任何一样，量到的就不是生产那条路（实测 sp 多给一枚键就整批清空成 112 字节）。
+    """
     import tax_wechat
-    url = f"{tax_wechat.YUANBAO_SEARCH}?tab=weixin_article&query={quote('研发费用加计扣除', safe='')}"
-    return ("GET", url, {"headers": dict(tax_wechat.HEADERS_YUANBAO),
-                         "timeout": tax_wechat.TIMEOUT, "verify": False, "stream": True})
+    keyword = "研发费用加计扣除"
+    body = {"query": keyword, "page": 1, "sp": {"tab": tax_wechat.VERTICAL_TAB}}
+    headers = dict(tax_wechat.HEADERS_YUANBAO)
+    headers.update({
+        "Content-Type": "application/json",
+        "x-original-uri": "%s?tab=weixin_article&query=%s" % (
+            tax_wechat.IWEIXIN_PREFIX, quote(keyword, safe="")),
+    })
+    return ("POST", tax_wechat.YUANBAO_NEXT_PAGE,
+            {"headers": headers, "timeout": tax_wechat.TIMEOUT, "verify": False,
+             "data": json.dumps(body, ensure_ascii=False).encode("utf-8")})
 
 
 def _sogou_mobile_call():
@@ -155,8 +178,12 @@ def _wechat_read_call():
             "这本身就是台账要记的一条：入口不通，正文阈值就取不到。")
     print(f"前置元宝检索：取到 {len(urls)} 枚有效微信正文直链（每枚只发一次），"
           "正文判据与生产一致（落地 URL 里找 appmsgcaptcha）。")
+    # allow_redirects=False 与生产同形（3.62.49 起 `read_article` 不跟随跳转）：
+    # 签名地址被 302 送到非微信主机时，探针跟着跳就会把「落地不是那篇文章」读成
+    # 「正常拿到 200」。
     return [("GET", u, {"headers": dict(tax_wechat.HEADERS_WX),
-                        "timeout": tax_wechat.TIMEOUT, "verify": False}) for u in urls]
+                        "timeout": tax_wechat.TIMEOUT, "verify": False,
+                        "allow_redirects": False}) for u in urls]
 
 
 def _json_shape(r):
@@ -183,26 +210,46 @@ def _npc_shape(r):
 
 
 def _yuanbao_shape(r):
-    """元宝公众号检索：复用生产解析、登录墙、拦截页与零结果判据。"""
+    """元宝取数的形态判据：JSON 优先，判据全部复用生产那三份。
+
+    复用而不是另写：`_parse_vertical_cards`（含微信直链白名单）、`_alive_ms` 与
+    `SEARCH_ALIVE_MS`（熔断短接）。探针自立一套，台账里「复现」与「没复现」量的
+    就不是同一件事。
+
+    非 JSON 的回显仍按 HTML 分形，因为兜底档与拦截页都在那里落。两处旧标签被拆掉：
+    「请登录后继续查看内容」在前端 chunk 里是 `getRateLimitTitle("429_outer")`
+    的文案——那是**限流**，不是账号墙（旧标签「200-登录墙」把限流记成了墙，台账
+    因此一直以为这两路需要登录态）；`login_page` 那枚锚才是真需要登录。
+    """
     import tax_wechat
     landed = r.url or ""
     if ("/antispider/" in landed or "antip=web_hd" in landed
-            or "antip=wap_hd" in landed):
+            or "antip=wap_hd" in landed or "antip=new_hd" in landed):
         return "跳转-antispider"
     if r.status_code != 200:
         return f"HTTP {r.status_code}"
     if not r.content:
         return "200-空响应(0字节)"
-    rows = tax_wechat._parse_results(r.text)
-    if rows:
-        valid = sum(1 for row in rows if row.get("url"))
-        if valid:
-            return f"200-结果卡({len(rows)}张,有效直链{valid})"
-        return f"200-结果卡无有效直链({len(rows)}张)"
-    if any(anchor in r.text for anchor in tax_wechat.LOGIN_WALL_ANCHORS):
-        return "200-登录墙"
-    blocked = tax_wechat._blocked_reason(r.text)
-    if blocked:
+    try:
+        payload = json.loads(r.text)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        cards = payload.get("cards") or []
+        if cards:
+            rows, bad = tax_wechat._parse_vertical_cards(payload)
+            if rows:
+                return f"200-结果卡({len(rows)}张,白名单挡掉{bad})"
+            return f"200-结果卡无有效直链({len(cards)}张)"
+        alive = tax_wechat._alive_ms(payload)
+        if alive < tax_wechat.SEARCH_ALIVE_MS:
+            return f"200-通道短接(search={alive}ms)"
+        return f"200-空批次(search={alive}ms)"
+    if "请登录后继续查看内容" in r.text:
+        return "200-限流页(429_outer)"
+    if "linkid&quot;:&quot;login_page" in r.text:
+        return "200-需登录"
+    if tax_wechat._blocked_reason(r.text):
         return "200-验证或拦截页"
     if any(marker in r.text for marker in tax_wechat.ZERO_RESULT_MARKS):
         return "200-无结果提示"
@@ -269,8 +316,8 @@ TARGETS = {
         "good": "200-JSON",
     },
     "yuanbao": {
-        "record": "元宝公众号检索的限流阈值尚未量过",
-        "endpoint": "GET https://so.qq.com/isearch?tab=weixin_article&query=",
+        "record": "元宝公众号检索的限流阈值尚未量过（3.62.49 起量 POST 取数主路）",
+        "endpoint": "POST https://so.qq.com/searchweb/api/search/next-page",
         "build_call": _yuanbao_call,
         "shape": _yuanbao_shape,
         "good": lambda label: label.startswith("200-结果卡("),

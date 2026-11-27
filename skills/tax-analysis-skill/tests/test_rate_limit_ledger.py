@@ -14,6 +14,7 @@
 内容本身（从没量过），不是过期数据，所以它必须在值域里被明写出来才通过。
 """
 
+import json
 import re
 import sys
 import unittest
@@ -184,48 +185,98 @@ class TestProbeShapeLabels(unittest.TestCase):
         spec.loader.exec_module(cls.probe)
 
     def test_yuanbao_request_shape_matches_production(self):
+        """探针那一发必须与生产的垂直档 POST 同形——量错路径等于没量。
+
+        逐枚对照 `_vertical_search`：接口、`sp.tab`、`page`、`x-original-uri`、
+        编码方式、超时、verify。旧断言钉的是 GET `/isearch`，3.62.49 起那是兜底档。
+        """
         import tax_wechat
         method, url, kwargs = self.probe._yuanbao_call()
-        self.assertEqual("GET", method)
-        self.assertTrue(url.startswith(
-            "https://so.qq.com/isearch?tab=weixin_article&query="))
-        self.assertIn("%E7%A0%94%E5%8F%91", url)
-        self.assertEqual(tax_wechat.HEADERS_YUANBAO, kwargs["headers"])
+        self.assertEqual("POST", method)
+        self.assertEqual(tax_wechat.YUANBAO_NEXT_PAGE, url)
         self.assertEqual(tax_wechat.TIMEOUT, kwargs["timeout"])
-        self.assertTrue(kwargs["stream"])
+        self.assertFalse(kwargs["verify"])
+        sent = json.loads(kwargs["data"].decode("utf-8"))
+        self.assertEqual({"tab": tax_wechat.VERTICAL_TAB}, sent["sp"])
+        self.assertEqual(1, sent["page"])
+        self.assertEqual("研发费用加计扣除", sent["query"])
+        self.assertIsInstance(kwargs["data"], bytes)
+        headers = kwargs["headers"]
+        self.assertEqual("application/json", headers["Content-Type"])
+        self.assertTrue(headers["x-original-uri"].startswith(
+            tax_wechat.IWEIXIN_PREFIX + "?tab=weixin_article&query="))
+        for key, value in tax_wechat.HEADERS_YUANBAO.items():
+            self.assertEqual(value, headers[key], f"会话头 {key} 没带上")
 
     def test_empty_page_is_not_recorded_as_a_normal_page(self):
         label = self.probe._yuanbao_shape(_Resp(status=200, body=""))
         self.assertFalse(self.probe._is_good(self.probe.TARGETS["yuanbao"], label))
         self.assertIn("空响应", label)
 
-    def test_result_zero_and_unknown_pages_have_distinct_labels(self):
-        import tax_wechat
-        with_card = ('<a href="https://mp.weixin.qq.com/s?k=1" '
-                     'data-x="linkid&quot;:&quot;title&quot;">题名</a>') * 3
-        self.assertTrue(self.probe._yuanbao_shape(
-            _Resp(body=with_card)).startswith("200-结果卡("))
+    def test_json_shapes_are_separated_from_each_other(self):
+        """JSON 四形各占一格：有货／有货但链形不对／短接／活着的空批。
+
+        熔断形与「站内真没这个词」在阈值上是两件事，压成一格就看不出这一发是被
+        频控了还是站点给了空清单（真响应读数：满档 `timings.search` 744+ms，
+        熔断只剩十几毫秒且 `cards` 为空）。
+        """
+        card = {"data": {"vm": {"title": "题名",
+                                "jumpUrl": "https://mp.weixin.qq.com/s?k=1"},
+                         "item": {"jsonData": {"pub_time": 1764000000}}}}
+        junk = {"data": {"vm": {"title": "题名", "jumpUrl": "https://evil.test/a"}}}
+        alive = json.dumps({"cards": [card], "timings": {"search": 744}},
+                           ensure_ascii=False)
+        self.assertTrue(self.probe._yuanbao_shape(_Resp(body=alive)).startswith(
+            "200-结果卡("), alive)
+        badlink = json.dumps({"cards": [junk], "timings": {"search": 744}},
+                             ensure_ascii=False)
+        self.assertIn("无有效直链", self.probe._yuanbao_shape(_Resp(body=badlink)))
+        dead = json.dumps({"cards": [], "timings": {"antispider": 23}},
+                          ensure_ascii=False)
+        self.assertIn("通道短接", self.probe._yuanbao_shape(_Resp(body=dead)))
+        empty = json.dumps({"cards": [], "timings": {"search": 744}},
+                           ensure_ascii=False)
+        self.assertIn("空批次", self.probe._yuanbao_shape(_Resp(body=empty)))
+
+    def test_html_fallback_pages_keep_their_own_labels(self):
+        """非 JSON 的回显仍按 HTML 分形：无结果提示、改版壳页。"""
         self.assertEqual(self.probe._yuanbao_shape(
             _Resp(body='<div class="js-results">没有结果</div>')), "200-无结果提示")
         self.assertIn("既无结果卡也无提示",
                       self.probe._yuanbao_shape(_Resp(body="<html>壳页</html>")))
 
-    def test_login_and_captcha_walls_are_not_zero_hits(self):
+    def test_rate_limit_page_is_not_recorded_as_a_login_wall(self):
+        """「请登录后继续查看内容」记成限流，`login_page` 才记成需登录。
+
+        前端 chunk 逐字：`case"429_outer":return"请登录后继续查看内容"`，渲染器
+        `WebLoginRequiredPlaceholder` 按 `allowLogin:"429_outer"===code` 才给登录
+        入口。旧标签把前者记成「登录墙」，台账于是以为这两路需要登录态，掩盖了它
+        其实是频次问题（真网那两枚红的真身就是它）。
+        """
+        self.assertEqual(self.probe._yuanbao_shape(
+            _Resp(body="<div>请登录后继续查看内容</div>")), "200-限流页(429_outer)")
         self.assertEqual(self.probe._yuanbao_shape(
             _Resp(body='<a data-x="linkid&quot;:&quot;login_page&quot;">登录</a>')),
-            "200-登录墙")
+            "200-需登录")
         self.assertEqual(self.probe._yuanbao_shape(
             _Resp(body='<script src="/static/antispider.min.js"></script>环境异常')),
             "200-验证或拦截页")
 
     def test_result_cards_win_over_summary_keywords(self):
-        body = ('<div class="js-results antispiderToken">'
-                '<a href="https://mp.weixin.qq.com/s?k=1" '
-                'data-x="linkid&quot;:&quot;title&quot;">题名</a>'
-                '<div class="sa-text">摘要提到验证码</div></div>')
-        self.assertTrue(self.probe._yuanbao_shape(_Resp(body=body)).startswith("200-结果卡("))
+        """摘要里带「验证码」不改变形态：先认卡，再认拦截锚。"""
+        card = {"data": {"vm": {"title": "题名", "summary": "摘要提到验证码",
+                                "jumpUrl": "https://mp.weixin.qq.com/s?k=1"}}}
+        body = json.dumps({"cards": [card], "timings": {"search": 744}},
+                          ensure_ascii=False)
+        self.assertTrue(self.probe._yuanbao_shape(_Resp(body=body)).startswith(
+            "200-结果卡("), body)
 
     def test_antispider_redirect_still_wins_over_the_body_checks(self):
+        for marker in ("antip=web_hd", "antip=wap_hd", "antip=new_hd"):
+            self.assertEqual(
+                self.probe._yuanbao_shape(_Resp(
+                    body='{"cards":[],"timings":{"search":744}}',
+                    url="https://so.qq.com/x?" + marker)), "跳转-antispider", marker)
         self.assertEqual(
             self.probe._yuanbao_shape(_Resp(
                 body="", url="https://so.qq.com/antispider/?x")), "跳转-antispider")
@@ -241,11 +292,26 @@ class TestProbeShapeLabels(unittest.TestCase):
             self.assertTrue(callable(good),
                             f"{key} 的 good 又不是判函数了，形态会被压平")
         self.assertTrue(self.probe._is_good(
-            self.probe.TARGETS["yuanbao"], "200-结果卡(10张,有效直链10)"))
+            self.probe.TARGETS["yuanbao"], "200-结果卡(10张,白名单挡掉0)"))
+        self.assertFalse(self.probe._is_good(
+            self.probe.TARGETS["yuanbao"], "200-通道短接(search=22ms)"))
+        self.assertFalse(self.probe._is_good(
+            self.probe.TARGETS["yuanbao"], "200-限流页(429_outer)"))
         self.assertFalse(self.probe._is_good(
             self.probe.TARGETS["yuanbao"], "200-空响应(0字节)"))
         self.assertFalse(self.probe._is_good(
             self.probe.TARGETS["sogou-mobile"], "200-有结果块无直链(raw=0)"))
+
+    def test_read_probe_declares_no_redirect_following(self):
+        """正文入口探针与 `read_article` 同形：不跟随跳转（零出网断言）。
+
+        `_wechat_read_call` 要先真检索一次才有签名地址，离线用例不能调它，
+        所以这里钉源码：那枚 `allow_redirects` 必须在。
+        """
+        src = (ROOT / "tests" / "probe_rate_limit.py").read_text(encoding="utf-8")
+        body = src[src.index("def _wechat_read_call"):src.index("def _json_shape")]
+        self.assertIn('"allow_redirects": False', body,
+                      "_wechat_read_call 跟随跳转，落地非微信主机也会被记成正常")
 
     def test_the_probe_covers_all_active_entries(self):
         self.assertIn("yuanbao", self.probe.TARGETS)

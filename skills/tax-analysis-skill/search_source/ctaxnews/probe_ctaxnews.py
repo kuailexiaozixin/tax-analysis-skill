@@ -198,12 +198,12 @@ def item3(session, kw):
 
 
 # ---------------------------------------------------------------------------
-# 4. 位置参数各单发 + q 盖位置参数
+# 4. 位置参数各单发 + q 盖位置参数 + 非 q 之间取交集
 # ---------------------------------------------------------------------------
 def item4(session, kw):
     print("[4] 匹配域靠提交哪一枚参数名（词：%s）" % kw)
     counts = {}
-    for name in ("q", "title", "content", "keyword", "author"):
+    for name in ("q", "title", "content", "keyword", "author", "subtitle"):
         p = {name: kw, "pageNo": 1, "pageSize": C.SEARCH_PAGE_SIZE,
              "sort": C.SORT_ONLY, "siteID": C.SITE_ID, "channel": C.CHANNEL_WEB}
         j, _ = _r(p, session)
@@ -211,7 +211,7 @@ def item4(session, kw):
         if name == "q":
             _CACHE["qrows"] = (j or {}).get("article") or []
         time.sleep(C.SEARCH_MIN_GAP)
-    _line("五枚各自单发的 foundNum",
+    _line("六枚各自单发的 foundNum",
           " ".join("%s=%s" % (k, v) for k, v in counts.items()))
     both = dict(_q(kw))
     both["title"] = kw
@@ -221,6 +221,34 @@ def item4(session, kw):
           "channel=%s 显式提交、pageSize=%d" % (C.CHANNEL_WEB, C.SEARCH_PAGE_SIZE))
     print("  => q 与 title 同发 foundNum=%s；q 单发=%s（相等说明 q 把位置参数盖掉）"
           % ((j or {}).get("foundNum"), counts.get("q")))
+    # 2026-11-27 那一轮把「q 盖掉位置参数」验到了全部六枚，并把不含 q 的两枚之间的
+    # 关系定成取交集。判「一枚盖一枚」还是「取交集」必须用两枚必然互斥的值——
+    # 本轮 title=出口退税 与 subtitle=2026年第29号 同发回 4，那 4 条标题本来就带
+    # 「出口退税」，两种解释分不开；换成 title=出口退税 × subtitle=部分超市存在
+    # 增值税税率适用错误问题（必然互斥）回 0，才定成取交集。
+    for other in ("subtitle", "content", "keyword"):
+        p = dict(_q(kw))
+        p[other] = kw
+        j3, _ = _r(p, session)
+        time.sleep(C.SEARCH_MIN_GAP)
+        _line("q 与 %s 同发" % other,
+              "foundNum=%s；q 单发=%s（相等 = %s 被 q 盖掉）"
+              % ((j3 or {}).get("foundNum"), counts.get("q"), other))
+    inter = {}
+    for label, pair in (("title × subtitle（必然互斥）",
+                         {"title": "出口退税", "subtitle": "部分超市存在增值税税率适用错误问题"}),
+                        ("content × title",
+                         {"content": "增值税", "title": "出口退税"})):
+        p = dict(pair)
+        p.update({"pageNo": 1, "pageSize": C.SEARCH_PAGE_SIZE,
+                  "sort": C.SORT_ONLY, "siteID": C.SITE_ID, "channel": C.CHANNEL_WEB})
+        j4, _ = _r(p, session)
+        time.sleep(C.SEARCH_MIN_GAP)
+        inter[label] = (j4 or {}).get("foundNum")
+        _line(label, "foundNum=%s（两枚单发=%s）"
+              % (inter[label], "、".join(str(counts.get(k)) for k in pair)))
+    print("  => 不含 q 的两枚之间：取交集时数必须严格小于两枚单发；回 0 只说明这两枚"
+          "的值必然互斥（上一档就是），不等于站点不做交集")
     # 「q 不分词、按多枚词各自命中后取交集」这条判据的可证伪形式，三发各打一处：
     #   粘一枚库里没有的词必须回 0（否则站点是按词取并）；
     #   两枚真词的正序与倒序必须同数（不同数说明空格那一段进了整串匹配，顺序敏感）；
@@ -235,11 +263,37 @@ def item4(session, kw):
         extra[label] = (j2 or {}).get("foundNum")
         time.sleep(C.SEARCH_MIN_GAP)
         _line(label, "foundNum=%s（「%s」单发=%s）" % (extra[label], kw, counts.get("q")))
-    print("  => 读数分档：粘词回 0 = 不按词取并；正序 %s 与倒序 %s 同数 = 顺序不参与匹配，"
-          "「整串匹配」的写法要改成「按词取交集」；两枚同现的数若等于单发「%s」那一档（%s），"
+    if extra.get("q 两枚真词，正序") == extra.get("q 两枚真词，倒序"):
+        print("  => 正序 %s 与倒序 %s 同数：顺序不参与匹配，「整串匹配」的写法要改成「按词取交集」"
+              % (extra.get("q 两枚真词，正序"), extra.get("q 两枚真词，倒序")))
+    else:
+        print("  => 正序 %s 与倒序 %s 不同数：顺序参与匹配，这一路是「整串按字面参与匹配」，"
+              "不是按词取交集（粘词回 0 只排除按词取并）"
+              % (extra.get("q 两枚真词，正序"), extra.get("q 两枚真词，倒序")))
+    print("  => 两枚同现的数若等于单发「%s」那一档（%s），"
           "说明第一枚没参与收窄，多词限定在这一路其实无效"
-          % (extra.get("q 两枚真词，正序"), extra.get("q 两枚真词，倒序"),
-             second, extra.get("只发第二枚词「%s」" % second)))
+          % (second, extra.get("只发第二枚词「%s」" % second)))
+    # 文号那一枚只能走 subtitle：本层 find_by_doc_number 的窄档就是这一发。
+    for doc in ("财政部 税务总局公告2026年第29号", "国家税务总局公告2025年第15号"):
+        p = {"subtitle": doc, "pageNo": 1, "pageSize": C.SEARCH_PAGE_SIZE,
+             "sort": C.SORT_ONLY, "siteID": C.SITE_ID, "channel": C.CHANNEL_WEB}
+        j5, _ = _r(p, session)
+        time.sleep(C.SEARCH_MIN_GAP)
+        rows5 = (j5 or {}).get("article") or []
+        _line("文号窄档 subtitle=%s" % doc,
+              "foundNum=%s，其中 subtitle 就是这枚文号的行 %d/%d"
+              % ((j5 or {}).get("foundNum"),
+                 sum(1 for x in rows5 if (x.get("subtitle") or "").strip() == doc),
+                 len(rows5)))
+        q5 = dict(_q(doc))
+        j6, _ = _r(q5, session)
+        time.sleep(C.SEARCH_MIN_GAP)
+        rows6 = (j6 or {}).get("article") or []
+        _line("同一枚文号改走全文 q=",
+              "foundNum=%s，subtitle 真等于它的只有 %d/%d 行"
+              % ((j6 or {}).get("foundNum"),
+                 sum(1 for x in rows6 if (x.get("subtitle") or "").strip() == doc),
+                 len(rows6)))
 
 
 # ---------------------------------------------------------------------------
@@ -723,8 +777,7 @@ def item13(session, kw):
 # 第 4 项含多词语义那四发正控；第 8 项含按目录段全扫的那一批（本地栏目表 14 枚目录段，
 # 定点三页已覆盖 3 枚，其余 11 枚各取一栏；某目录下取不到合格叶栏时这一项会少发）；
 # 第 9 项两栏各一次栏目页加一次检索集，`_column_id_set` 那发已由 `_col_ids` 计入。
-COST = {1: 2, 2: 9, 3: 19, 4: 10, 5: 10, 6: 7, 7: 9, 8: 15, 9: 4, 10: 102, 11: 2, 12: 15, 13: 5}
-
+COST = {1: 2, 2: 9, 3: 19, 4: 20, 5: 10, 6: 7, 7: 9, 8: 15, 9: 4, 10: 102, 11: 2, 12: 15, 13: 5}
 
 def main():
     ap = argparse.ArgumentParser(description="中国税网站点体检（只读，不调模型）")

@@ -45,9 +45,12 @@ HTML 注释里，页面上没有能用的排序控件。可用的只有 `/xy/Sea
 
 1. 翻页只认 `pageNo`。`start`、`page`、`pageNum`、`p`、`offset`、`currentPage` 六枚别名站点一律忽略，
    提交它们等于反复取第一页。`pageNo` 从 0 与从 1 起都是第一页（`search_ctax` 从 1 起）。
-2. `q` 会把位置参数盖掉。站点的匹配域靠"提交哪一枚参数名"表达（`q` 全文、`title` 只标题、
-   `keyword` 只站点关键词字段、`author` 只 author 段），`q` 与 `title` 同时提交时 foundNum
-   仍等于只给 `q` 的那一份——所以 `match` 的实现是换参数名，不是给 `q` 加限定。
+2. `q` 会把其余五枚位置参数全盖掉。站点的匹配域靠"提交哪一枚参数名"表达（`q` 全文、`title` 只标题、
+   `content` 只正文、`keyword` 只站点关键词字段、`author` 只 author 段、`subtitle` 只文号那一列），
+   `q` 与任何一枚同时提交时 foundNum 都等于只给 `q` 的那一份（2026-11-27 对 `title`/`subtitle`/
+   `content`/`keyword` 各验一发）——所以 `match` 的实现是换参数名，不是给 `q` 加限定。
+   反过来，**不含 `q` 的两枚之间取交集**（`content=增值税` 46,609 × `title=出口退税` 1,752 ⇒ 551）。
+   判「盖掉」还是「交集」必须用两枚必然互斥的值，同数的巧合分不开这两种解释。
    `q` 另一条要自己守住：**一个概念一枚词，多词之间没有可用的 AND 语义**——站点按整串字面匹配，
    同一批词正序「增值税 留抵退税」1,940、倒序 12、粘一枚库里没有的词回 0
    （`NOTE.md`「Search.do 的参数值域」那五行表）；与税屋那一路的判据相反，两边不能互相套用。
@@ -60,7 +63,7 @@ HTML 注释里，页面上没有能用的排序控件。可用的只有 `/xy/Sea
 `search_ctax` 也只在参数有值时才提交那一枚。
 
 **取值域在本层先判，判过才发**。`search_ctax` 交出「没走成」的六种写法都是零请求退出：
-空词没限栏目、日期非 `yyyy-mm-dd`、`match` 不在 `MATCH_POSITIONS` 那四枚里、`channel` 不在
+空词没限栏目、日期非 `yyyy-mm-dd`、`match` 不在 `MATCH_POSITIONS` 那六枚里、`channel` 不在
 0/1/2 里、不收满时 `size` 不是正整数、`max_rows` 为负；`--list` 那一路再多一枚，`pages` 非正也不发。
 两处拦停的理由不同：拼错的 `match` 过去会换成 `q` 发出去，取回的是全文那一摞，读数看着像
 "标题限定生效了"；越界的 `channel` 过去会打到站点那份 37 字节空结构，那句与"这一词没命中"
@@ -124,15 +127,16 @@ HTML 注释里，页面上没有能用的排序控件。可用的只有 `/xy/Sea
 python scripts/tax_ctax.py "出口退税" --size 5 --read
 python scripts/tax_ctax.py "研发费用加计扣除" --size 5 --json          # 只要链接与字段
 python scripts/tax_ctax.py "增值税" --match title --size 20           # 只匹配标题
+python scripts/tax_ctax.py "2026年第29号" --match doc_number          # 只匹配文号那一列（站点的 subtitle；q= 会把援引这枚文号的解读文章一起带回）
 python scripts/tax_ctax.py "留抵退税" --column 政策解读 --size 10      # 限定一栏（名称或 nodeID）
 python scripts/tax_ctax.py "增值税" --column 63 --from 2025-01-01 --to 2025-12-31
 python scripts/tax_ctax.py "留抵退税" --all --max-rows 500            # 按 foundNum 翻页，先到 500 行收口
-python scripts/tax_ctax.py --find-doc "财政部 税务总局公告2026年第29号"   # 按文号定位并合并同稿多栏
+python scripts/tax_ctax.py --find-doc "财政部 税务总局公告2026年第29号"   # 按文号定位并合并同稿多栏（先走文号窄档一发，回 0 条才回落全文）
 python scripts/tax_ctax.py --list 税案通报 --pages 2     # 不检索，按栏目列表页取清单（交回 0 行不等于这一栏没内容）
 python scripts/tax_ctax.py --columns                                # 打印本地栏目表，不发请求
 python scripts/tax_ctax.py --update-columns                         # 重建栏目表（逐栏目空词计数，声明 102 次＝当期一轮实发，随站点节点数与父栏目数浮动）
-python search_source/ctaxnews/probe_ctaxnews.py                         # 全项复测（声明 209 次请求，第 6、7、8、10、12 项按站点当期读数浮动）
-python search_source/ctaxnews/probe_ctaxnews.py --fast                  # 同上但不重建栏目表（107 次）
+python search_source/ctaxnews/probe_ctaxnews.py                         # 全项复测（声明 219 次请求，第 6、7、8、10、12 项按站点当期读数浮动）
+python search_source/ctaxnews/probe_ctaxnews.py --fast                  # 同上但不重建栏目表（117 次）
 python search_source/ctaxnews/probe_ctaxnews.py --items 3,5 --keyword 留抵退税   # 只跑值域与栏目两档
 ```
 

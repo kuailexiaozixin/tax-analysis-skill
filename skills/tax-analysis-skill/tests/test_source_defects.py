@@ -4405,14 +4405,40 @@ class TestCtaxSearchContract(_CtaxOffline):
             self.assertTrue(r["_status"].startswith("没走成"), r["_status"])
             self.assertIn("37 字节", r["_status"])
 
-    def test_match_outside_the_four_slots_is_refused(self):
+    def test_match_outside_the_five_slots_is_refused(self):
         """拼错的 match 过去会换成 q 发出去，交回的读数是全文那一路的，看着像限定生效了。"""
-        for m in ("titel", "Tile", ""):
+        for m in ("titel", "Tile", "", "subtitle", "doc-number", "docNumber"):
             s = _CtaxSession({})
             r = CT.search_ctax("增值税", size=1, match=m, session=s)
             self.assertEqual([], s.requested)
             self.assertTrue(r["_status"].startswith("没走成"), r["_status"])
-            self.assertIn("四枚", r["_status"])
+            self.assertIn("六枚", r["_status"])
+
+    def test_doc_number_match_sends_the_subtitle_slot(self):
+        """按文号定位只能走 subtitle 这一枚：站点把文号存在检索行的 subtitle 列。
+
+        q= 是全文匹配，会把正文援引了这枚文号的解读文章一起带回来——2026-11-27 实测
+        「国家税务总局公告2025年第15号」q= 报 10 条里只有 1 条文号真在列里；
+        「财税〔2016〕36号」q= 报 1,210 条，subtitle= 报 1 条就是那份原文。
+        """
+        s, _ = self._one_hit(match="doc_number")
+        q = s.sent_params[0]
+        self.assertEqual("增值税", q["subtitle"])
+        self.assertNotIn("q", q, "q 会把位置参数盖掉，同发等于窄档没生效")
+        for other in ("title", "content", "keyword", "author"):
+            self.assertNotIn(other, q)
+
+    def test_doc_number_writing_variants_are_not_normalised(self):
+        """站点在 subtitle 这一枚上不挑写法，本层就不替它整形。
+
+        全角〔2016〕与半角[2016] 回逐字节相同的 824 字节；机关名带不带空格回相同的
+        3,249 字节。整形反而可能把读者给的原串改坏，所以原样发出去。
+        """
+        for given in ("财税〔2016〕36号", "财税[2016]36号",
+                      "财政部 税务总局公告2026年第29号", "财政部税务总局公告2026年第29号"):
+            s2 = _CtaxSession({CTAX_SEARCH: _CtaxResp(_ctax_json([_ctax_row_json()]))})
+            CT.search_ctax(given, size=1, match="doc_number", session=s2)
+            self.assertEqual(given, s2.sent_params[0]["subtitle"])
 
     def test_non_positive_size_is_refused_unless_paging_to_the_end(self):
         s = _CtaxSession({})
@@ -4430,6 +4456,72 @@ class TestCtaxSearchContract(_CtaxOffline):
         r = CT.search_ctax("增值税", fetch_all=True, max_rows=-1, session=s)
         self.assertEqual([], s.requested)
         self.assertIn("负数", r["_status"])
+
+
+class TestCtaxDocNumberLookup(_CtaxOffline):
+    """`find_by_doc_number` 这一路先窄后宽：窄档的 0 不能读成「站内没有这份文件」。
+
+    2026-11-27 实测：文号装在检索行的 `subtitle` 列，`q=` 是全文匹配——
+    「国家税务总局公告2025年第15号」`q=` 报 10 条而其中只有 1 条文号真在列里，
+    「财税〔2016〕36号」`q=` 报 1,210 条、`subtitle=` 报 1 条就是那份原文。
+    但 200 行取样里只有 47 行录了 subtitle，所以窄档回 0 必须回落 `q=` 再问一次。
+    """
+
+    def _run(self, doc, pages):
+        s = _CtaxSession({CTAX_SEARCH: pages})
+        return s, CT.find_by_doc_number(doc, session=s)
+
+    def test_the_narrow_slot_is_asked_first_and_stops_there(self):
+        """窄档命中就收口：只发一次请求，且发的是 subtitle= 不是 q=。"""
+        s, r = self._run("财税〔2016〕36号",
+                         [_CtaxResp(_ctax_json([_ctax_row_json(subtitle="财税〔2016〕36号")],
+                                               found=1))])
+        self.assertEqual(1, len(s.requested), "窄档命中了还往后问，等于白跑一次全文检索")
+        self.assertEqual("财税〔2016〕36号", s.sent_params[0]["subtitle"])
+        self.assertNotIn("q", s.sent_params[0])
+        self.assertEqual(["doc_number=财税〔2016〕36号"], r["_queries_tried"])
+
+    def test_the_fallback_sentence_is_absent_when_the_narrow_slot_hit(self):
+        s, r = self._run("财税〔2016〕36号",
+                         [_CtaxResp(_ctax_json([_ctax_row_json(subtitle="财税〔2016〕36号")],
+                                               found=1))])
+        self.assertNotIn("回落", r["_caveat"], "窄档自己命中的，不该说成回落取到的")
+
+    def test_a_zero_from_the_narrow_slot_falls_back_to_fulltext(self):
+        """窄档 0 条 ⇒ 回落 q=，并把「这是回落」写进 _caveat。"""
+        s, r = self._run("财政部 税务总局公告2026年第29号",
+                         [_CtaxResp(_ctax_json([], found=0)),
+                          _CtaxResp(_ctax_json([_ctax_row_json()], found=1))])
+        self.assertEqual(2, len(s.requested))
+        self.assertIn("subtitle", s.sent_params[0])
+        self.assertEqual("财政部 税务总局公告2026年第29号", s.sent_params[1]["q"])
+        self.assertEqual(["doc_number=财政部 税务总局公告2026年第29号",
+                          "q=财政部 税务总局公告2026年第29号"], r["_queries_tried"])
+        self.assertIn("这一份是回落全文", r["_caveat"])
+        self.assertIn("窄档的 0 不代表站内没有这份文件", r["_caveat"])
+
+    def test_the_space_variant_is_asked_only_when_it_differs(self):
+        """去空白那一档只在真去掉东西时才问；写法本就无空白的文号不多发那一次。"""
+        s, r = self._run("财税〔2016〕36号",
+                         [_CtaxResp(_ctax_json([], found=0)),
+                          _CtaxResp(_ctax_json([], found=0))])
+        self.assertEqual(["doc_number=财税〔2016〕36号", "q=财税〔2016〕36号"],
+                         r["_queries_tried"], "无空白的串不该再多问一遍去空白那一档")
+        self.assertEqual(2, len(s.requested))
+        s2, r2 = self._run("财政部 税务总局公告2026年第29号",
+                           [_CtaxResp(_ctax_json([], found=0)),
+                            _CtaxResp(_ctax_json([], found=0)),
+                            _CtaxResp(_ctax_json([], found=0))])
+        self.assertEqual(3, len(r2["_queries_tried"]))
+        self.assertEqual("q=财政部税务总局公告2026年第29号", r2["_queries_tried"][2])
+        self.assertTrue(r2["_status"].startswith("0 条"),
+                        "三档都空要报成站点回 0，不能报成没走成")
+
+    def test_empty_doc_number_asks_the_site_nothing(self):
+        s = _CtaxSession({})
+        r = CT.find_by_doc_number("   ", session=s)
+        self.assertEqual([], s.requested)
+        self.assertIn("没给文号", r["_status"])
 
 
 class TestCtaxMidPageDropout(_CtaxOffline):
@@ -5087,8 +5179,8 @@ class TestCtaxSubSkillDocHooks(unittest.TestCase):
         for n in cost:
             self.assertEqual(cost[n], table[n], "第 %d 项的请求数对不上" % n)
         total, fast = sum(cost.values()), sum(cost.values()) - cost[10]
-        self.assertEqual(209, total, "探针的 COST 合计与文档那两个数不等，先核对哪一侧改了")
-        self.assertEqual(107, fast, "去掉第 10 项（栏目表重建）之后的合计对不上")
+        self.assertEqual(219, total, "探针的 COST 合计与文档那两个数不等，先核对哪一侧改了")
+        self.assertEqual(117, fast, "去掉第 10 项（栏目表重建）之后的合计对不上")
         # 同一对合计复述在六处文字里：NOTE 的复测入口那一行、表下面那一行、单轮耗时那一行，
         # 子技能 SKILL 命令行那两条注释，README 目录树那一行，台账登记那一行。
         # 这六处都在用例够得着的路径上——改了表不改它们，读者按文字发请求就会数错。
